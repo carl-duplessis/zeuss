@@ -1,7 +1,9 @@
 """Zeuss command-line entry point.
 
-    python -m zeuss info      # environment + backend report
-    python -m zeuss demo      # run the continuous->discrete collapse demo
+    python -m zeuss info                 # environment + backend report
+    python -m zeuss demo                 # continuous->discrete collapse demo
+    python -m zeuss ask                  # ask-a-question demo (answer + coherence)
+    python -m zeuss ask socrates is_a    # ask one question against the demo KB
 """
 from __future__ import annotations
 
@@ -30,15 +32,44 @@ def _demo() -> int:
     return 0
 
 
+def _ask(subject: str | None, relation: str | None) -> int:
+    from .qa import ask, demo_ontology
+
+    if subject and relation:
+        onto = demo_ontology()
+        answer = ask(onto, onto.ground(), subject, relation)
+        print(f"Q: {subject} {relation} ?")
+        print(f"A: {answer}")
+        return 0
+
+    # No specific question -> run the full narrated demo.
+    try:
+        from examples.ask_demo import main as ask_main  # type: ignore
+
+        ask_main()
+    except Exception:
+        onto = demo_ontology()
+        memory = onto.ground()
+        for subject_, relation_ in [("socrates", "is_a"), ("dragon", "is_a")]:
+            print(f"Q: {subject_} {relation_} ?")
+            print(f"A: {ask(onto, memory, subject_, relation_)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zeuss", description="Zeuss substrate CLI")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("info", help="print environment / backend report")
     sub.add_parser("demo", help="run the collapse demo")
+    ask = sub.add_parser("ask", help="ask a question (answer + coherence)")
+    ask.add_argument("subject", nargs="?", help="e.g. socrates")
+    ask.add_argument("relation", nargs="?", help="e.g. is_a")
     args = parser.parse_args(argv)
 
     if args.cmd == "info":
         return _info()
+    if args.cmd == "ask":
+        return _ask(args.subject, args.relation)
     if args.cmd == "demo":
         try:
             return _demo()
