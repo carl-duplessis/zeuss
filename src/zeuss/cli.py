@@ -5,6 +5,7 @@
     python -m zeuss ask                  # ask-a-question demo (answer + coherence)
     python -m zeuss ask socrates is_a    # ask one question against the demo KB
     python -m zeuss audit                # sheaf cohomology consistency audit
+    python -m zeuss drive                # active inference / EFE action selection
 """
 from __future__ import annotations
 
@@ -96,6 +97,35 @@ def _audit() -> int:
     return 0
 
 
+def _drive() -> int:
+    from .drive import Action, expected_free_energy, select_action
+    from .tier2_substrate.energy import Landscape
+    from .tier2_substrate.hypervectors import Codebook
+
+    print("== Active inference: Expected Free Energy action selection ==\n")
+    cb = Codebook(dim=4096, seed=3)
+    goal = cb.symbol("goal")
+    other = cb.symbol("other")
+    land = Landscape().add(goal, 1.0)
+    state = cb.symbol("state")
+
+    advance = Action("advance", goal, is_discovery=False)
+    probe = Action("probe_environment", other, is_discovery=True)
+    actions = [advance, probe]
+
+    print("Scenario: parameters known - pick the best goal-directed action")
+    for a in actions:
+        efe = expected_free_energy(land, cb, state, a, entropy_beta=2.0)
+        print(f"  {a.name:<18} EFE={efe:+.3f}  discovery={a.is_discovery}")
+    picked = select_action(land, cb, state, actions, missing_params=False, entropy_beta=2.0)
+    print(f"  -> picked: {picked.name}\n")
+
+    print("Scenario: parameters missing - restrict to low-risk discovery actions")
+    picked_missing = select_action(land, cb, state, actions, missing_params=True, entropy_beta=2.0)
+    print(f"  -> picked: {picked_missing.name}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zeuss", description="Zeuss substrate CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -105,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     ask.add_argument("subject", nargs="?", help="e.g. socrates")
     ask.add_argument("relation", nargs="?", help="e.g. is_a")
     sub.add_parser("audit", help="sheaf cohomology consistency audit")
+    sub.add_parser("drive", help="active inference / EFE action selection")
     args = parser.parse_args(argv)
 
     if args.cmd == "info":
@@ -113,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         return _ask(args.subject, args.relation)
     if args.cmd == "audit":
         return _audit()
+    if args.cmd == "drive":
+        return _drive()
     if args.cmd == "demo":
         try:
             return _demo()

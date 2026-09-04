@@ -57,9 +57,11 @@
       `Theory.satisfied()` check in isolation. `zeuss audit` CLI demo added.
 
 ## v0.9 — active inference / Expected Free Energy drive loop
-- [ ] `drive.py`: score candidate actions by `EFE = pragmatic_value +
+- [x] `drive.py`: score candidate actions by `EFE = pragmatic_value -
       epistemic_value`, reusing `Landscape.energy` and `collapse.entropy`;
       restrict to discovery actions when parameters are missing.
+      `zeuss drive` CLI demo added. Scoped as a discrete-action EFE scorer,
+      not a full active-inference generative-model agent.
 
 ## v0.10 — Bayesian AST program synthesis
 - [ ] `tier4_synthesis/`: a total (guaranteed-terminating) expression DSL with

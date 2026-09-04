@@ -112,6 +112,18 @@ in isolation, connected pairwise on shared variables - catching disagreement
 between individually-satisfied theories that neither one's own
 `Theory.satisfied()` could see.
 
+## Drive loop (active inference)
+`drive.py` scores candidate `Action`s by `EFE = pragmatic_weight *
+pragmatic_value - epistemic_weight * epistemic_value`: `pragmatic_value`
+reuses `Landscape.energy` on a one-step hypothetical blend toward the
+action's effect (predicted goal progress, lower is better); `epistemic_value`
+reuses `collapse.entropy`/`occupancy` (predicted uncertainty reduction,
+higher is better). `select_action` picks the minimum-EFE action, restricting
+to actions flagged `is_discovery` when `missing_params` is set - a literal,
+testable version of "autonomously execute low-risk discovery actions when
+parameters are missing," not a general active-inference generative-model
+agent (no beliefs, no learned world model, no perception-action loop).
+
 ## Backends
 `backend.py` exposes `xp` (NumPy or JAX), `HAS_JAX`, and complex dtypes. Tier-2
 substrate math is now routed through `xp` end-to-end, so the same code runs on
