@@ -75,9 +75,12 @@
       supported and tested directly, not auto-synthesized (see `dsl.py`).
 
 ## v1.0 — GA-HDC (experimental, optional)
-- [ ] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
+- [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
-      the existing complex-phasor hypervectors.
+      the existing complex-phasor hypervectors. Verified: geometric product
+      associativity, known Cl(2,0) blade identities, rotor magnitude
+      preservation, rotor angle composition, and the Cl(2,0) even-subalgebra
+      <-> complex-number bridge. Exploratory; no other module depends on it.
 
 ## Notes on hardware
 - JAX GPU/TPU and Triton need Linux + a CUDA GPU. On this Windows machine, use

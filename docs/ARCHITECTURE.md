@@ -150,6 +150,22 @@ hand-built programs. This is the scoped, concretely testable version of
 `ADAMAI_SPEC.md` Part 2 Tier 4's "zero-error", "provably correct" program
 synthesis language, which is not an achievable target for general programs.
 
+## GA-HDC (experimental) - `geometric.py`
+A small Clifford algebra Cl(n,0), `n <= 6` (up to 64 blade coefficients),
+**additive** alongside the existing D-dimensional complex-phasor
+hypervectors, not a replacement - a literal Clifford algebra at D>10,000
+(as `docs/ADAMAI_SPEC.md` asks for) would need `2**10000` blade components,
+computationally nonsensical. `geometric_product` uses a precomputed
+sign/index table over blade bitmasks, verified against known Cl(2,0)
+identities (`e12*e12 == -1`). `rotor`/`apply_rotor` give relation-as-rotation
+(a sandwich product) for a *simple* bivector, generalizing `bind`'s phase
+multiplication. The genuine bridge back to `hypervectors.py`: Cl(2,0)'s even
+subalgebra (scalar + pseudoscalar) is isomorphic to the complex numbers
+already used there (`test_geometric.py` checks this directly against
+Python's built-in `complex` arithmetic) - a proper generalisation, not an
+unrelated bolt-on. Status: exploratory research spike; no other module
+depends on it.
+
 ## Backends
 `backend.py` exposes `xp` (NumPy or JAX), `HAS_JAX`, and complex dtypes. Tier-2
 substrate math is now routed through `xp` end-to-end, so the same code runs on
