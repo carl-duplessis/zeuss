@@ -17,9 +17,12 @@ from zeuss.tier2_substrate.energy import Landscape, settle
 from zeuss.tier2_substrate.hypervectors import (
     Codebook,
     encode_record,
+    random_hypervector,
     similarity,
     unbind,
 )
+from zeuss.tier3_logic.compiler import Rule, Theory
+from zeuss.tier3_logic.grounding import compile_theory, readout
 
 
 def main() -> None:
@@ -51,7 +54,20 @@ def main() -> None:
     _, e_hot = settle(land, probe, steps=40, temperature=0.4, rng=rng)
     print(f"deterministic (T=0):   energy {e_cold[0]:+.3f} -> {e_cold[-1]:+.3f}")
     print(f"probabilistic (T=0.4): energy {e_hot[0]:+.3f} -> {e_hot[-1]:+.3f}")
-    print("(cold descent reaches a lower, crisper ground state.)")
+    print("(cold descent reaches a lower, crisper ground state.)\n")
+
+    print("== Frontier 2b: logic compiles to energy ==")
+    variables = ["rain", "wet"]
+    theory = Theory(rules=[Rule("rain", "wet", weight=1.0)])
+    theory_cb = Codebook(dim=4096, seed=1)
+    logic_land = compile_theory(theory_cb, theory, variables)
+    z0 = random_hypervector(theory_cb.dim, np.random.default_rng(3))
+    z_final, energies = settle(logic_land, z0, steps=80)
+    valuation = readout(theory_cb, variables, z_final)
+    print("rule: rain -> wet   (weight=1.0)")
+    print(f"settled energy: {energies[0]:.3f} -> {energies[-1]:.3f}")
+    print(f"read-out valuation: {{'rain': {valuation['rain']:.2f}, 'wet': {valuation['wet']:.2f}}}")
+    print(f"theory satisfied by the settled state: {theory.satisfied(valuation, tol=0.2)}")
 
 
 if __name__ == "__main__":

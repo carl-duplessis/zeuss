@@ -27,9 +27,47 @@
 - [ ] Optional FFT-based binding for very high dimensions.
 
 ## v0.5 — the logic compiler closes the loop (Frontier 2)
-- [ ] Compile a `Theory` directly into a Tier-2 `Landscape` and show that
-      settling reproduces the theory's satisfying valuations.
+- [x] Compile a `Theory` directly into a Tier-2 `Landscape` and show that
+      settling reproduces the theory's satisfying valuations
+      (`tier3_logic/grounding.py`).
 - [ ] Probabilistic priors as temperature schedules.
+
+## v0.6 — liquid time-step dynamics (adaptive annealing)
+- [ ] `energy.settle_adaptive`: step size scales with how much the previous
+      step reduced energy (shrink near plateaus/hard boundaries, grow on open
+      gradients), with early stopping on convergence.
+- [ ] `collapse.anneal_adaptive`: β schedule spacing adapts to how fast
+      entropy is falling, instead of a fixed static schedule tuple.
+
+## v0.7 — event-spiking asynchronous activation
+- [ ] `tier2_substrate/spiking.py`: a `SpikingGate` with refractory hysteresis
+      that gates which `Landscape` attractor groups participate in `settle`,
+      skipping compute on dormant regions.
+
+## v0.8 — sheaf cohomology topological consistency auditor
+- [ ] `tier3_logic/sheaf.py`: a graph-level (1-skeleton) cellular sheaf over
+      shared-variable agreement constraints; `H⁰`/`H¹` via rank-nullity on the
+      coboundary matrix, detecting global contradictions that are invisible to
+      any single `Theory.satisfied()` check in isolation.
+
+## v0.9 — active inference / Expected Free Energy drive loop
+- [ ] `drive.py`: score candidate actions by `EFE = pragmatic_value +
+      epistemic_value`, reusing `Landscape.energy` and `collapse.entropy`;
+      restrict to discovery actions when parameters are missing.
+
+## v0.10 — Bayesian AST program synthesis
+- [ ] `tier4_synthesis/`: a total (guaranteed-terminating) expression DSL with
+      loops (bounded folds), bounded recursion (fuel-limited), lists, and
+      conditionals; a mutation/crossover population search scored by
+      example-based energy, with fitness-proportionate selection reusing
+      `collapse.softmax` and selection pressure rising across generations.
+      Verified against held-out examples — not a claim of general program
+      correctness.
+
+## v1.0 — GA-HDC (experimental, optional)
+- [ ] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
+      `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
+      the existing complex-phasor hypervectors.
 
 ## Notes on hardware
 - JAX GPU/TPU and Triton need Linux + a CUDA GPU. On this Windows machine, use

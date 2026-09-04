@@ -56,10 +56,25 @@ GPU implementations must match the reference within tolerance (parity test).
 
 ## Tier 3 — logic compiler
 `ontology.py` grounds `(subject, relation, object)` triples into bound-and-
-bundled hypervectors (NetworkX for the graph, with a fallback). `compiler.py`
-provides t-norms, residuated implications, weighted `Rule`s and a `Theory`
-whose total penalty is a continuous energy over `[0,1]` valuations — the bridge
-from symbolic axioms to Tier-2 basins.
+bundled hypervectors (NetworkX for the graph, with a fallback). Each entity is
+bound under a `ROLE:subj` or `ROLE:obj` role wave depending on slot, and the
+object slot is additionally passed through a fixed cyclic permutation — plain
+role binding alone is commutative, so an entity that is one fact's object and
+the next fact's subject (any transitive chain) would otherwise produce an
+*exact* algebraic tie between its true successor and its predecessor; the
+permutation breaks that collision. `qa.py`'s `ask`/`chain`/`entails` iterate
+`Ontology.step` (one deductive hop) to answer single- and multi-hop queries,
+each carrying a coherence that honestly separates known facts from guesses.
+
+`compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
+a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
+`grounding.py` closes the loop: `compile_theory` represents each propositional
+variable as a `[0,1]`-weighted bundle of two poles (`TRUE`/`FALSE`), enumerates
+the theory's Boolean corners, and registers every low-energy corner as a
+`Landscape` attractor weighted by `exp(-energy)` — settling from any start
+state relaxes toward the theory's satisfying valuations, and `readout` reads
+the settled truth values back out. Scoped to `O(2**n)` corner enumeration,
+matching `Theory`'s expected small-`n` scale.
 
 ## Backends
 `backend.py` exposes `xp` (NumPy or JAX), `HAS_JAX`, and complex dtypes. Tier-2
