@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from zeuss.tier2_substrate.collapse import anneal, collapse
-from zeuss.tier2_substrate.energy import Landscape, settle
+from zeuss.tier2_substrate.collapse import anneal, anneal_adaptive, collapse
+from zeuss.tier2_substrate.energy import Landscape, settle, settle_adaptive
 from zeuss.tier2_substrate.hypervectors import (
     Codebook,
     encode_record,
@@ -67,7 +67,20 @@ def main() -> None:
     print("rule: rain -> wet   (weight=1.0)")
     print(f"settled energy: {energies[0]:.3f} -> {energies[-1]:.3f}")
     print(f"read-out valuation: {{'rain': {valuation['rain']:.2f}, 'wet': {valuation['wet']:.2f}}}")
-    print(f"theory satisfied by the settled state: {theory.satisfied(valuation, tol=0.2)}")
+    print(f"theory satisfied by the settled state: {theory.satisfied(valuation, tol=0.2)}\n")
+
+    print("== Frontier 1b / 2c: liquid time-step (adaptive step size / beta) ==")
+    fixed_trace = anneal(cb, probe, schedule=(0.5, 1, 2, 4, 8, 16, 32))
+    adaptive_trace = anneal_adaptive(cb, probe)
+    print(f"fixed schedule:    {len(fixed_trace)} steps, final entropy {fixed_trace[-1]['entropy_bits']:.4f} bits")
+    print(f"adaptive schedule: {len(adaptive_trace)} steps, final entropy {adaptive_trace[-1]['entropy_bits']:.4f} bits")
+    print("adaptive beta trace:", [round(row["beta"], 2) for row in adaptive_trace])
+
+    _, _, fixed_step_sizes = settle_adaptive(land, probe, max_steps=200)
+    print(f"settle_adaptive on the same probe: {len(fixed_step_sizes)} steps, "
+          f"step sizes {[round(s, 3) for s in fixed_step_sizes]}")
+    print("(step size grows on an open gradient, convergence is detected early -"
+          " no fixed step count needed.)")
 
 
 if __name__ == "__main__":

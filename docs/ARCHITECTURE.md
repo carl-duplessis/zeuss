@@ -35,13 +35,20 @@ A state is described by its softmax occupancy over the codebook. `entropy`
 measures ambiguity; raising the inverse temperature β sharpens the distribution
 until it snaps to one symbol. `anneal` runs a cooling schedule and records
 entropy falling toward a discrete decision. **The decision is the collapse.**
+`anneal_adaptive` grows β at a rate set once from the probe's intrinsic
+top-2 similarity margin (fixed throughout a schedule, since only β varies) —
+an unambiguous probe grows β quickly; a near-tie between two close symbols
+grows it slowly, spending more of the schedule resolving the ambiguity.
 
 ### Energy (`energy.py`) — Frontier 2
 A `Landscape` is weighted attractor hypervectors (the axioms). `settle` relaxes
 a state toward the softmax-weighted attractor mean on the phase torus.
 `temperature = 0` is a deterministic descent to the ground state; `temperature
 > 0` injects thermal phase noise (probabilistic exploration). Satisfying a rule
-and minimising energy are one operation.
+and minimising energy are one operation. `settle_adaptive` scales its step
+size by how much the *previous* step actually reduced energy — shrinking near
+plateaus/saddles, growing on open gradients — and stops early on convergence
+instead of always running a fixed step count (the "liquid time-step" idea).
 
 ### Resonance (`resonance.py`) — Frontier 3
 `interfere` superposes waveforms *without* per-element renormalisation, so

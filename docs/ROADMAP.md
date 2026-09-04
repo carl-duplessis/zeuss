@@ -33,11 +33,12 @@
 - [ ] Probabilistic priors as temperature schedules.
 
 ## v0.6 — liquid time-step dynamics (adaptive annealing)
-- [ ] `energy.settle_adaptive`: step size scales with how much the previous
-      step reduced energy (shrink near plateaus/hard boundaries, grow on open
+- [x] `energy.settle_adaptive`: step size scales with how much the previous
+      step reduced energy (shrink near plateaus/saddles, grow on open
       gradients), with early stopping on convergence.
-- [ ] `collapse.anneal_adaptive`: β schedule spacing adapts to how fast
-      entropy is falling, instead of a fixed static schedule tuple.
+- [x] `collapse.anneal_adaptive`: β growth rate is set once from the probe's
+      intrinsic top-2 similarity margin (an ambiguous near-tie grows slowly,
+      an unambiguous probe grows fast), instead of a fixed static schedule.
 
 ## v0.7 — event-spiking asynchronous activation
 - [ ] `tier2_substrate/spiking.py`: a `SpikingGate` with refractory hysteresis

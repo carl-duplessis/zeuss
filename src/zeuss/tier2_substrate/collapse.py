@@ -73,3 +73,41 @@ def anneal(codebook: Codebook, z, schedule=(0.5, 1, 2, 4, 8, 16, 32)):
         _, info = collapse(codebook, z, inverse_temperature=beta)
         trace.append({"beta": float(beta), **{k: info[k] for k in ("entropy_bits", "winner", "winner_prob")}})
     return trace
+
+
+def anneal_adaptive(
+    codebook: Codebook,
+    z,
+    beta_start: float = 0.5,
+    beta_max: float = 64.0,
+    entropy_tol: float = 0.05,
+    growth_range: tuple[float, float] = (1.05, 3.0),
+    margin_scale: float = 0.5,
+    max_steps: int = 40,
+):
+    """Cooling schedule whose beta growth rate adapts to the probe's ambiguity.
+
+    "Liquid time-step" applied to Frontier 1. ``z`` is fixed throughout a
+    schedule - only beta changes - so the probe's intrinsic hardness (the raw
+    similarity gap between its best and second-best codebook symbol) is a
+    single beta-independent number, computed once up front: a small gap (two
+    close, competing symbols - a genuinely hard decision) grows beta slowly,
+    spending more of the schedule resolving the ambiguity; a wide gap
+    (unambiguous probe) grows beta quickly, reaching the discrete decision in
+    fewer steps than a fixed static schedule needs. Stops once entropy drops
+    below ``entropy_tol`` or ``beta_max``/``max_steps`` is hit.
+    """
+    sims = sorted(codebook.similarities(z).values(), reverse=True)
+    margin = (sims[0] - sims[1]) if len(sims) > 1 else 1.0
+    lo, hi = growth_range
+    growth = lo + (hi - lo) * float(np.clip(margin / margin_scale, 0.0, 1.0))
+
+    beta = beta_start
+    trace = []
+    for _ in range(max_steps):
+        _, info = collapse(codebook, z, inverse_temperature=beta)
+        trace.append({"beta": float(beta), **{k: info[k] for k in ("entropy_bits", "winner", "winner_prob")}})
+        if info["entropy_bits"] <= entropy_tol or beta >= beta_max:
+            break
+        beta = min(beta * growth, beta_max)
+    return trace
