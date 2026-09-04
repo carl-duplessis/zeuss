@@ -4,6 +4,7 @@
     python -m zeuss demo                 # continuous->discrete collapse demo
     python -m zeuss ask                  # ask-a-question demo (answer + coherence)
     python -m zeuss ask socrates is_a    # ask one question against the demo KB
+    python -m zeuss audit                # sheaf cohomology consistency audit
 """
 from __future__ import annotations
 
@@ -56,6 +57,45 @@ def _ask(subject: str | None, relation: str | None) -> int:
     return 0
 
 
+def _audit() -> int:
+    from .tier3_logic.compiler import Rule, Theory
+    from .tier3_logic.sheaf import SheafGraph, from_theories
+
+    print("== Sheaf cohomology consistency audit ==\n")
+
+    print("Scenario 1: three sensors reporting on a shared variable 'door_open'")
+    theories = {
+        "sensorA": Theory(rules=[Rule("TRUE", "door_open", weight=10.0)]),  # believes open
+        "sensorB": Theory(rules=[Rule("TRUE", "door_open", weight=10.0)]),  # believes open
+        "sensorC": Theory(rules=[Rule("door_open", "ZERO", weight=10.0)]),  # believes closed
+    }
+    shared_vars = {name: ["door_open"] for name in theories}
+    graph = from_theories(theories, shared_vars)
+    print(f"local readings: {graph.local_values}")
+    print(f"globally consistent (do all readings actually agree)? {graph.is_consistent_with()}")
+    residual = graph.local_section(graph.local_values)
+    for (u, v, _ru, _rv), r in zip(graph.edges, residual):
+        flag = "VIOLATED" if abs(r) > 1e-9 else "ok"
+        print(f"  edge {u} == {v}: residual={r:+.2f}  [{flag}]")
+
+    print("\nScenario 2: structural diagnostics on toy consistency graphs")
+    consistent = (
+        SheafGraph().add_edge("a", "b", 1.0, 1.0).add_edge("b", "c", 1.0, 1.0).add_edge("a", "c", 1.0, 1.0)
+    )
+    frustrated = (
+        SheafGraph().add_edge("a", "b", 1.0, 1.0).add_edge("b", "c", 1.0, 1.0).add_edge("a", "c", 1.0, -1.0)
+    )
+    print(
+        f"consistent triangle: H0={consistent.h0_dimension()} H1={consistent.h1_dimension()}"
+        f"  (nontrivial section exists: {not consistent.has_only_trivial_section()})"
+    )
+    print(
+        f"frustrated triangle: H0={frustrated.h0_dimension()} H1={frustrated.h1_dimension()}"
+        f"  (nontrivial section exists: {not frustrated.has_only_trivial_section()})"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zeuss", description="Zeuss substrate CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -64,12 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     ask = sub.add_parser("ask", help="ask a question (answer + coherence)")
     ask.add_argument("subject", nargs="?", help="e.g. socrates")
     ask.add_argument("relation", nargs="?", help="e.g. is_a")
+    sub.add_parser("audit", help="sheaf cohomology consistency audit")
     args = parser.parse_args(argv)
 
     if args.cmd == "info":
         return _info()
     if args.cmd == "ask":
         return _ask(args.subject, args.relation)
+    if args.cmd == "audit":
+        return _audit()
     if args.cmd == "demo":
         try:
             return _demo()

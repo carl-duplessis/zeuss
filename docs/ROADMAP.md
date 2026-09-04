@@ -46,10 +46,15 @@
       skipping compute on dormant regions.
 
 ## v0.8 — sheaf cohomology topological consistency auditor
-- [ ] `tier3_logic/sheaf.py`: a graph-level (1-skeleton) cellular sheaf over
+- [x] `tier3_logic/sheaf.py`: a graph-level (1-skeleton) cellular sheaf over
       shared-variable agreement constraints; `H⁰`/`H¹` via rank-nullity on the
-      coboundary matrix, detecting global contradictions that are invisible to
-      any single `Theory.satisfied()` check in isolation.
+      coboundary matrix. Corrected during implementation: for this homogeneous
+      construction `H¹ != 0` does *not* mean contradiction (a frustrated cycle
+      is full rank, `H¹ == 0`) - the structural question is `H⁰ == 0` (only
+      the trivial section survives); whether specific agents' conclusions
+      disagree is answered by `local_section`/`is_consistent_with` instead.
+      `from_theories` catches disagreement invisible to any single
+      `Theory.satisfied()` check in isolation. `zeuss audit` CLI demo added.
 
 ## v0.9 — active inference / Expected Free Energy drive loop
 - [ ] `drive.py`: score candidate actions by `EFE = pragmatic_value +

@@ -94,6 +94,24 @@ state relaxes toward the theory's satisfying valuations, and `readout` reads
 the settled truth values back out. Scoped to `O(2**n)` corner enumeration,
 matching `Theory`'s expected small-`n` scale.
 
+### Sheaf cohomology auditor (`sheaf.py`)
+A graph-level (1-skeleton) cellular sheaf: named scalar-stalk vertices, edges
+asserting two vertices' restricted images must agree, `H^0`/`H^1` via
+rank-nullity on the coboundary matrix (`np.linalg.matrix_rank` - real linear
+algebra, not a heuristic). **Honesty note:** for this homogeneous
+construction, a frustrated (sign-flipped) cycle is *full rank* (`H^1 == 0`)
+and instead collapses `H^0` to `{0}` (only the trivial section survives) -
+the opposite of the naive "`H^1 != 0` means contradiction" intuition the
+ADAMAI spec's prose suggests. `h0_dimension() == 0` is the right *structural*
+question ("is this topology so over-constrained only the zero assignment
+works"); whether *specific* observed data actually agrees is answered
+directly by `local_section`/`is_consistent_with` (a residual check, not a
+cohomological one). `from_theories` builds a graph from several agents'
+`Theory` objects, each agent's own best (lowest-energy) local valuation found
+in isolation, connected pairwise on shared variables - catching disagreement
+between individually-satisfied theories that neither one's own
+`Theory.satisfied()` could see.
+
 ## Backends
 `backend.py` exposes `xp` (NumPy or JAX), `HAS_JAX`, and complex dtypes. Tier-2
 substrate math is now routed through `xp` end-to-end, so the same code runs on
