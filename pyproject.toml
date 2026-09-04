@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeuss"
+version = "0.1.0"
+description = "A unified continuous<->discrete computational substrate (VSA + energy landscapes + wave resonance)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Carl du Plessis" }]
+keywords = ["vsa", "hdc", "hyperdimensional", "neuro-symbolic", "energy-based", "jax"]
+
+# The Tier-2 substrate runs on NumPy alone. Everything else is optional.
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# Tier 2 acceleration + autodiff (functional, XLA). JAX GPU wheels are platform
+# specific - see docs/ROADMAP.md and https://docs.jax.dev/en/latest/installation.html
+jax = ["jax>=0.4.30"]
+# Tier 3 graph/knowledge representation.
+logic = ["networkx>=3.0"]
+# Tier 1 GPU kernels (Linux + CUDA GPU only).
+gpu = ["triton>=3.0"]
+# Visualisation for experiments/notebooks.
+viz = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4", "ruff>=0.5", "networkx>=3.0", "matplotlib>=3.7"]
+
+[project.scripts]
+zeuss = "zeuss.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

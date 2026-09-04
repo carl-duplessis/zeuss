@@ -1,0 +1,20 @@
+# Core (Tier 2 substrate runs on this alone, CPU, any OS):
+numpy>=1.24
+
+# --- Optional, install what you need ---------------------------------------
+# Tier 3 logic graphs:
+networkx>=3.0
+# Experiment plots:
+matplotlib>=3.7
+# Dev:
+pytest>=7.4
+ruff>=0.5
+
+# Tier 2 autodiff/XLA (JAX). On Windows use WSL2 or the CPU wheel; GPU wheels
+# are platform-specific, so install JAX separately per the official guide
+# rather than pinning it here:
+#   pip install -U "jax"            # CPU
+#   see https://docs.jax.dev/en/latest/installation.html for CUDA/TPU
+#
+# Tier 1 GPU kernels (Linux + NVIDIA GPU only):
+#   pip install triton
