@@ -64,13 +64,15 @@
       not a full active-inference generative-model agent.
 
 ## v0.10 — Bayesian AST program synthesis
-- [ ] `tier4_synthesis/`: a total (guaranteed-terminating) expression DSL with
+- [x] `tier4_synthesis/`: a total (guaranteed-terminating) expression DSL with
       loops (bounded folds), bounded recursion (fuel-limited), lists, and
       conditionals; a mutation/crossover population search scored by
       example-based energy, with fitness-proportionate selection reusing
       `collapse.softmax` and selection pressure rising across generations.
       Verified against held-out examples — not a claim of general program
-      correctness.
+      correctness. `zeuss synth` CLI demo added. Note: the auto-search only
+      targets the non-recursive DSL subset; `Letrec`/`Recur` is interpreter-
+      supported and tested directly, not auto-synthesized (see `dsl.py`).
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [ ] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,

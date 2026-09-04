@@ -6,6 +6,7 @@
     python -m zeuss ask socrates is_a    # ask one question against the demo KB
     python -m zeuss audit                # sheaf cohomology consistency audit
     python -m zeuss drive                # active inference / EFE action selection
+    python -m zeuss synth                # genetic-programming AST synthesis demo
 """
 from __future__ import annotations
 
@@ -126,6 +127,41 @@ def _drive() -> int:
     return 0
 
 
+def _synth() -> int:
+    import numpy as np
+
+    from .tier4_synthesis.dsl import Fuel, evaluate
+    from .tier4_synthesis.search import Example
+    from .tier4_synthesis.synth import describe, synthesize
+
+    print("== Bayesian AST program synthesis (tier4_synthesis) ==\n")
+    print("Target: f(xs) = sum(xs), from 4 I/O examples\n")
+    examples = [
+        Example({"xs": [1, 2, 3]}, 6),
+        Example({"xs": [4, 5]}, 9),
+        Example({"xs": [10]}, 10),
+        Example({"xs": []}, 0),
+    ]
+    rng = np.random.default_rng(1)
+    best, beta_trace, verified = synthesize(
+        ["xs"], examples, list_inputs=("xs",), population_size=300, max_generations=100, max_depth=3, rng=rng
+    )
+    print(f"population=300, ran {len(beta_trace)} generation(s), selection pressure beta: "
+          f"{beta_trace[0]:.2f} -> {beta_trace[-1]:.2f}")
+    print(f"winning program: {describe(best)}")
+    print(f"verified against training examples: {verified}")
+    held_out = [[1, 1, 1, 1], [100, -50], [7]]
+    print("held-out check (not used during search):")
+    for xs in held_out:
+        result = evaluate(best, {"xs": xs}, Fuel(500))
+        print(f"  sum({xs}) -> {result}  (expected {sum(xs)})  {'OK' if result == sum(xs) else 'MISMATCH'}")
+    print(
+        "\n(This is example-based verification within a closed, total DSL - "
+        "not a formal proof of correctness for all possible inputs.)"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zeuss", description="Zeuss substrate CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -136,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     ask.add_argument("relation", nargs="?", help="e.g. is_a")
     sub.add_parser("audit", help="sheaf cohomology consistency audit")
     sub.add_parser("drive", help="active inference / EFE action selection")
+    sub.add_parser("synth", help="genetic-programming AST synthesis demo")
     args = parser.parse_args(argv)
 
     if args.cmd == "info":
@@ -146,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         return _audit()
     if args.cmd == "drive":
         return _drive()
+    if args.cmd == "synth":
+        return _synth()
     if args.cmd == "demo":
         try:
             return _demo()

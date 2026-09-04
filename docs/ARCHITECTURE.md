@@ -124,6 +124,32 @@ testable version of "autonomously execute low-risk discovery actions when
 parameters are missing," not a general active-inference generative-model
 agent (no beliefs, no learned world model, no perception-action loop).
 
+## Tier 4 — program synthesis (`tier4_synthesis/`)
+A different "Tier 4" numbering than this repo's internal tier1-3 layout -
+it follows `docs/ADAMAI_SPEC.md`'s own scheme, kept separate to avoid
+confusion. `dsl.py` is a closed, *total* expression language (arithmetic,
+booleans, lists, conditionals, structural folds for bounded loops, and
+fuel-limited `Letrec`/`Recur` for bounded recursion) - every construct that
+could loop forever carries an explicit finite bound, so `evaluate` always
+terminates without a wall-clock timeout. `encode.py` structurally encodes a
+program tree into one hypervector via the same recursive bind/bundle pattern
+`ontology.py` uses for triples. `search.py` runs a mutation/crossover genetic
+search: candidates are scored by real execution against I/O examples
+(`program_energy`), parents are chosen by fitness-proportionate sampling that
+reuses `collapse.softmax` directly over negative energies, and selection
+pressure rises across generations (the "liquid time-step" idea spread across
+a generational search instead of one `settle` call). `synth.py` is the public
+entry point.
+
+**Honesty statement:** "verified" means the winning candidate is re-checked
+against every given (and, in tests, held-out) example - not a formal proof of
+correctness for all inputs. The mutation/crossover search only targets the
+searchable DSL subset (no auto-generated recursion - see `dsl.py`'s honesty
+note); `Letrec`/`Recur` is fully interpreter-supported and tested directly on
+hand-built programs. This is the scoped, concretely testable version of
+`ADAMAI_SPEC.md` Part 2 Tier 4's "zero-error", "provably correct" program
+synthesis language, which is not an achievable target for general programs.
+
 ## Backends
 `backend.py` exposes `xp` (NumPy or JAX), `HAS_JAX`, and complex dtypes. Tier-2
 substrate math is now routed through `xp` end-to-end, so the same code runs on
