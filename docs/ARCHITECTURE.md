@@ -133,18 +133,24 @@ agent (no beliefs, no learned world model, no perception-action loop).
 ## Tier 4 — program synthesis (`tier4_synthesis/`)
 A different "Tier 4" numbering than this repo's internal tier1-3 layout -
 it follows `docs/ADAMAI_SPEC.md`'s own scheme, kept separate to avoid
-confusion. `dsl.py` is a closed, *total* expression language (arithmetic,
-booleans, lists, conditionals, structural folds for bounded loops, and
-fuel-limited `Letrec`/`Recur` for bounded recursion) - every construct that
-could loop forever carries an explicit finite bound, so `evaluate` always
-terminates without a wall-clock timeout. `encode.py` structurally encodes a
-program tree into one hypervector via the same recursive bind/bundle pattern
-`ontology.py` uses for triples. `search.py` runs a mutation/crossover genetic
-search: candidates are scored by real execution against I/O examples
+confusion. `dsl.py` is a closed, *total* expression language: arithmetic
+(`+ - * // %`), comparisons (`== != < <= > >=`), booleans, lists, `If`/`Let`,
+structural bounded loops (`Fold`, `Map`, `Filter`, all bounded by the length
+of the list they operate over) plus `Length`/`Index`, and fuel-limited
+`Letrec`/`Recur` for bounded recursion - every construct that could loop
+forever carries an explicit finite bound, so `evaluate` always terminates
+without a wall-clock timeout. `encode.py` structurally encodes a program tree
+into one hypervector via the same recursive bind/bundle pattern `ontology.py`
+uses for triples. `search.py` runs a mutation/crossover genetic search:
+candidates are scored by real execution against I/O examples
 (`program_energy`), parents are chosen by fitness-proportionate sampling that
 reuses `collapse.softmax` directly over negative energies, and selection
 pressure rises across generations (the "liquid time-step" idea spread across
-a generational search instead of one `settle` call). `synth.py` is the public
+a generational search instead of one `settle` call). Random generation uses
+weighted (not uniform) construct selection - with plain uniform weighting,
+each new construct added to the grammar silently diluted how often the
+already-useful ones (`binop`, `fold`) got picked, making previously-easy
+targets harder to find purely from grammar growth. `synth.py` is the public
 entry point.
 
 **Honesty statement:** "verified" means the winning candidate is re-checked

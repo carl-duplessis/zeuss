@@ -152,26 +152,45 @@ def _synth() -> int:
     from .tier4_synthesis.synth import describe, synthesize
 
     print("== Bayesian AST program synthesis (tier4_synthesis) ==\n")
-    print("Target: f(xs) = sum(xs), from 4 I/O examples\n")
-    examples = [
+
+    print("Scenario 1: f(xs) = sum(xs), from 4 I/O examples (uses Fold - a bounded loop)")
+    sum_examples = [
         Example({"xs": [1, 2, 3]}, 6),
         Example({"xs": [4, 5]}, 9),
         Example({"xs": [10]}, 10),
         Example({"xs": []}, 0),
     ]
-    rng = np.random.default_rng(1)
+    rng = np.random.default_rng(5)
     best, beta_trace, verified = synthesize(
-        ["xs"], examples, list_inputs=("xs",), population_size=300, max_generations=100, max_depth=3, rng=rng
+        ["xs"], sum_examples, list_inputs=("xs",), population_size=300, max_generations=100, max_depth=3, rng=rng
     )
     print(f"population=300, ran {len(beta_trace)} generation(s), selection pressure beta: "
           f"{beta_trace[0]:.2f} -> {beta_trace[-1]:.2f}")
     print(f"winning program: {describe(best)}")
     print(f"verified against training examples: {verified}")
-    held_out = [[1, 1, 1, 1], [100, -50], [7]]
-    print("held-out check (not used during search):")
-    for xs in held_out:
+    for xs in ([1, 1, 1, 1], [100, -50], [7]):
         result = evaluate(best, {"xs": xs}, Fuel(500))
         print(f"  sum({xs}) -> {result}  (expected {sum(xs)})  {'OK' if result == sum(xs) else 'MISMATCH'}")
+
+    print("\nScenario 2: f(xs) = [x for x in xs if x > 0], from 4 I/O examples (uses Filter)")
+    filter_examples = [
+        Example({"xs": [1, -2, 3, -4]}, [1, 3]),
+        Example({"xs": []}, []),
+        Example({"xs": [-1, -2]}, []),
+        Example({"xs": [5]}, [5]),
+    ]
+    rng2 = np.random.default_rng(0)
+    best2, beta_trace2, verified2 = synthesize(
+        ["xs"], filter_examples, list_inputs=("xs",), population_size=200, max_generations=60, max_depth=2, rng=rng2
+    )
+    print(f"population=200, ran {len(beta_trace2)} generation(s)")
+    print(f"winning program: {describe(best2)}")
+    print(f"verified against training examples: {verified2}")
+    for xs in ([-1, 2, -3, 4, 5], [0, 0, 1]):
+        result = evaluate(best2, {"xs": xs}, Fuel(500))
+        expected = [x for x in xs if x > 0]
+        print(f"  filter({xs}) -> {result}  (expected {expected})  {'OK' if result == expected else 'MISMATCH'}")
+
     print(
         "\n(This is example-based verification within a closed, total DSL - "
         "not a formal proof of correctness for all possible inputs.)"

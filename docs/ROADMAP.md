@@ -74,6 +74,20 @@
       targets the non-recursive DSL subset; `Letrec`/`Recur` is interpreter-
       supported and tested directly, not auto-synthesized (see `dsl.py`).
 
+## v0.11 — richer synthesis DSL: list ops
+- [x] `tier4_synthesis/dsl.py`: added `Length`, `Index`, `Map`, `Filter`
+      (all structural/bounded, same totality guarantee as `Fold`) and more
+      `BinOp`s (`% <= >= != >`). Random generation switched from uniform to
+      weighted construct selection - uniform weighting meant every new
+      construct silently diluted how often `fold`/`binop` got picked, making
+      previously-easy targets harder to find purely from grammar growth.
+      Found and fixed a real robustness bug while extending: `_mismatch`
+      could itself raise (a nested list from a badly-generated `Map`/`Filter`
+      body) *outside* `program_energy`'s exception guard, which could crash
+      the whole search instead of just penalizing one candidate - moved the
+      mismatch scoring inside the same `try`. `zeuss synth` CLI demo now
+      shows both a `Fold` and a `Filter` target.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

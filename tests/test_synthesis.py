@@ -6,11 +6,15 @@ from zeuss.tier2_substrate.hypervectors import Codebook, similarity
 from zeuss.tier4_synthesis.dsl import (
     BinOp,
     Const,
+    Filter,
     Fold,
     Fuel,
     FuelExhausted,
     If,
+    Index,
+    Length,
     Letrec,
+    Map,
     Recur,
     Var,
     count_nodes,
@@ -24,6 +28,28 @@ def test_fold_computes_a_bounded_loop():
     fold_sum = Fold(Var("xs"), Const(0), "acc", "item", BinOp("+", Var("acc"), Var("item")))
     assert evaluate(fold_sum, {"xs": [1, 2, 3, 4]}, Fuel(100)) == 10
     assert evaluate(fold_sum, {"xs": []}, Fuel(100)) == 0
+
+
+def test_list_ops_evaluate_correctly():
+    xs = Var("xs")
+    assert evaluate(Length(xs), {"xs": [1, 2, 3, 4]}, Fuel(100)) == 4
+    assert evaluate(Index(xs, Const(1)), {"xs": [10, 20, 30]}, Fuel(100)) == 20
+    with pytest.raises(IndexError):
+        evaluate(Index(xs, Const(5)), {"xs": [1, 2]}, Fuel(100))
+
+    doubled = Map(xs, "item", BinOp("*", Var("item"), Const(2)))
+    assert evaluate(doubled, {"xs": [1, 2, 3]}, Fuel(100)) == [2, 4, 6]
+
+    evens = Filter(xs, "item", BinOp("==", BinOp("%", Var("item"), Const(2)), Const(0)))
+    assert evaluate(evens, {"xs": [1, 2, 3, 4, 5, 6]}, Fuel(100)) == [2, 4, 6]
+
+
+def test_new_comparison_and_modulo_operators():
+    assert evaluate(BinOp("%", Const(7), Const(3)), {}, Fuel(10)) == 1
+    assert evaluate(BinOp("<=", Const(3), Const(3)), {}, Fuel(10)) is True
+    assert evaluate(BinOp(">=", Const(2), Const(3)), {}, Fuel(10)) is False
+    assert evaluate(BinOp("!=", Const(3), Const(4)), {}, Fuel(10)) is True
+    assert evaluate(BinOp(">", Const(5), Const(4)), {}, Fuel(10)) is True
 
 
 def test_bounded_recursion_computes_factorial_and_respects_fuel():
@@ -84,7 +110,7 @@ def test_synthesize_recovers_simple_arithmetic_function():
 
 
 def test_synthesize_recovers_list_sum_via_fold():
-    rng = np.random.default_rng(1)
+    rng = np.random.default_rng(5)
     examples = [
         Example({"xs": [1, 2, 3]}, 6),
         Example({"xs": [4, 5]}, 9),
@@ -97,6 +123,68 @@ def test_synthesize_recovers_list_sum_via_fold():
     assert verified
     for xs in ([1, 1, 1, 1], [100, -50], [], [7]):
         assert evaluate(best, {"xs": xs}, Fuel(500)) == sum(xs)
+
+
+def test_synthesize_recovers_length():
+    rng = np.random.default_rng(0)
+    examples = [
+        Example({"xs": [1, 2, 3]}, 3),
+        Example({"xs": []}, 0),
+        Example({"xs": [5, 5]}, 2),
+        Example({"xs": [1]}, 1),
+    ]
+    best, _trace, verified = synthesize(
+        ["xs"], examples, list_inputs=("xs",), population_size=100, max_generations=30, max_depth=2, rng=rng
+    )
+    assert verified
+    for xs in ([1, 2, 3, 4, 5], [], [9]):
+        assert evaluate(best, {"xs": xs}, Fuel(500)) == len(xs)
+
+
+def test_synthesize_recovers_map_doubling():
+    rng = np.random.default_rng(0)
+    examples = [
+        Example({"xs": [1, 2, 3]}, [2, 4, 6]),
+        Example({"xs": []}, []),
+        Example({"xs": [5]}, [10]),
+    ]
+    best, _trace, verified = synthesize(
+        ["xs"], examples, list_inputs=("xs",), population_size=150, max_generations=60, max_depth=2, rng=rng
+    )
+    assert verified
+    for xs in ([1, 1, 1], [10, -5]):
+        assert evaluate(best, {"xs": xs}, Fuel(500)) == [x * 2 for x in xs]
+
+
+def test_synthesize_recovers_filter_positives():
+    rng = np.random.default_rng(0)
+    examples = [
+        Example({"xs": [1, -2, 3, -4]}, [1, 3]),
+        Example({"xs": []}, []),
+        Example({"xs": [-1, -2]}, []),
+        Example({"xs": [5]}, [5]),
+    ]
+    best, _trace, verified = synthesize(
+        ["xs"], examples, list_inputs=("xs",), population_size=200, max_generations=60, max_depth=2, rng=rng
+    )
+    assert verified
+    for xs in ([-1, 2, -3, 4, 5], [0, 0, 1]):
+        assert evaluate(best, {"xs": xs}, Fuel(500)) == [x for x in xs if x > 0]
+
+
+def test_synthesize_recovers_first_element_via_index():
+    rng = np.random.default_rng(1)
+    examples = [
+        Example({"xs": [7, 8, 9]}, 7),
+        Example({"xs": [1]}, 1),
+        Example({"xs": [-5, 2]}, -5),
+    ]
+    best, _trace, verified = synthesize(
+        ["xs"], examples, list_inputs=("xs",), population_size=100, max_generations=30, max_depth=2, rng=rng
+    )
+    assert verified
+    for xs in ([42, 1, 2], [100]):
+        assert evaluate(best, {"xs": xs}, Fuel(500)) == xs[0]
 
 
 def test_synthesize_reports_unverified_when_infeasible_within_budget():

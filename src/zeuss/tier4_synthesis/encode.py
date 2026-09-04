@@ -9,7 +9,24 @@ tree instead of a flat triple.
 from __future__ import annotations
 
 from ..tier2_substrate.hypervectors import Codebook, bind, bundle
-from .dsl import BinOp, Const, Fold, If, Let, Letrec, ListLit, Node, Recur, UnaryOp, Var, children
+from .dsl import (
+    BinOp,
+    Const,
+    Filter,
+    Fold,
+    If,
+    Index,
+    Length,
+    Let,
+    Letrec,
+    ListLit,
+    Map,
+    Node,
+    Recur,
+    UnaryOp,
+    Var,
+    children,
+)
 
 
 def _op_label(node: Node) -> str:
@@ -23,6 +40,14 @@ def _op_label(node: Node) -> str:
         return f"Let:{node.name}"
     if isinstance(node, Fold):
         return f"Fold:{node.var_acc}:{node.var_item}"
+    if isinstance(node, Length):
+        return "Length"
+    if isinstance(node, Index):
+        return "Index"
+    if isinstance(node, Map):
+        return f"Map:{node.var_item}"
+    if isinstance(node, Filter):
+        return f"Filter:{node.var_item}"
     if isinstance(node, Letrec):
         return f"Letrec:{node.name}:{','.join(node.params)}"
     if isinstance(node, Recur):

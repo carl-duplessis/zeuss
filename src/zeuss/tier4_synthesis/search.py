@@ -1,14 +1,15 @@
 """Genetic-programming-style search over the DSL, scored by the existing substrate.
 
-Random generation, mutation, and crossover only target the *searchable*
-subset of the DSL - ``Const``/``Var``/``ListLit``/``BinOp``/``UnaryOp``/``If``/
-``Let``/``Fold`` (see :mod:`.dsl`'s honesty note on why ``Letrec``/``Recur``
-aren't auto-generated). Selection pressure ("liquid time-step" spread across
-a generational search rather than a single settle) reuses
-:func:`zeuss.tier2_substrate.collapse.softmax` directly over negative
-energies for fitness-proportionate parent selection - the exact same
-Boltzmann-weighting idea :mod:`zeuss.tier3_logic.grounding` already uses at
-compile time, applied once per generation instead of once at compile time.
+Random generation, mutation, and crossover target the *searchable* subset of
+the DSL - ``Const``/``Var``/``ListLit``/``BinOp``/``UnaryOp``/``If``/``Let``/
+``Fold``/``Length``/``Index``/``Map``/``Filter`` (see :mod:`.dsl`'s honesty
+note on why ``Letrec``/``Recur`` aren't auto-generated here). Selection
+pressure ("liquid time-step" spread across a generational search rather than
+a single settle) reuses :func:`zeuss.tier2_substrate.collapse.softmax`
+directly over negative energies for fitness-proportionate parent selection -
+the exact same Boltzmann-weighting idea :mod:`zeuss.tier3_logic.grounding`
+already uses at compile time, applied once per generation instead of once at
+compile time.
 """
 from __future__ import annotations
 
@@ -17,13 +18,39 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..tier2_substrate.collapse import softmax
-from .dsl import BinOp, Const, Fold, Fuel, If, Let, Node, UnaryOp, Var
+from .dsl import BinOp, Const, Filter, Fold, Fuel, If, Index, Length, Let, Map, Node, UnaryOp, Var
 from .dsl import children as _children
 from .dsl import count_nodes, evaluate, rebuild
 
-_BINOPS = ("+", "-", "*", "//", "==", "<", "and", "or")
+_BINOPS = ("+", "-", "*", "//", "%", "==", "!=", "<", "<=", ">", ">=", "and", "or")
 _UNARYOPS = ("-", "not")
 _LEAF_CONSTS = (0, 1, 2, 3, True, False)
+
+# Node "kind" weights for random generation, keyed by whether a list input is
+# available. Weighted (not uniform) so adding more list constructs doesn't
+# dilute how often the most generally useful ones (binop, fold) get picked -
+# with plain uniform weighting across all kinds, each new construct added to
+# the grammar silently made every existing target harder to find.
+_KIND_WEIGHTS_SCALAR = {"binop": 4, "unaryop": 1, "if": 2, "let": 1}
+_KIND_WEIGHTS_WITH_LIST = {
+    "binop": 4,
+    "unaryop": 1,
+    "if": 2,
+    "let": 1,
+    "fold": 3,
+    "length": 1,
+    "index": 1,
+    "map": 2,
+    "filter": 2,
+}
+
+
+def _choose_kind(rng: np.random.Generator, list_inputs: tuple[str, ...]) -> str:
+    weights = _KIND_WEIGHTS_WITH_LIST if list_inputs else _KIND_WEIGHTS_SCALAR
+    kinds = list(weights)
+    probs = np.array([weights[k] for k in kinds], dtype=float)
+    probs /= probs.sum()
+    return kinds[int(rng.choice(len(kinds), p=probs))]
 
 
 def _leaf(inputs: list[str], rng: np.random.Generator) -> Node:
@@ -42,11 +69,7 @@ def _grow(inputs: list[str], list_inputs: tuple[str, ...], rng: np.random.Genera
     if depth <= 0 or rng.random() < 0.35:
         return _leaf(scalars, rng)
 
-    choices = ["binop", "unaryop", "if", "let"]
-    if list_inputs:
-        choices.append("fold")
-        choices.append("fold")  # weight fold a bit higher when available
-    kind = choices[int(rng.integers(0, len(choices)))]
+    kind = _choose_kind(rng, list_inputs)
 
     if kind == "binop":
         op = _BINOPS[int(rng.integers(0, len(_BINOPS)))]
@@ -63,6 +86,18 @@ def _grow(inputs: list[str], list_inputs: tuple[str, ...], rng: np.random.Genera
     if kind == "let":
         name = f"_let{int(rng.integers(0, 10_000))}"
         return Let(name, _grow(inputs, list_inputs, rng, depth - 1), _grow(inputs + [name], list_inputs, rng, depth - 1))
+    if kind == "length":
+        return Length(Var(str(rng.choice(list_inputs))))
+    if kind == "index":
+        return Index(Var(str(rng.choice(list_inputs))), _grow(inputs, list_inputs, rng, depth - 1))
+    if kind == "map":
+        list_name = str(rng.choice(list_inputs))
+        body_inputs = scalars + ["_item"]
+        return Map(Var(list_name), "_item", _grow(body_inputs, (), rng, depth - 1))
+    if kind == "filter":
+        list_name = str(rng.choice(list_inputs))
+        body_inputs = scalars + ["_item"]
+        return Filter(Var(list_name), "_item", _grow(body_inputs, (), rng, depth - 1))
     # fold - body sees only the fold-bound names plus existing scalars, not
     # the raw list itself (see note above).
     list_name = str(rng.choice(list_inputs))
@@ -171,15 +206,18 @@ def _mismatch(result, expected) -> float:
 def program_energy(node: Node, examples: list[Example], fuel_budget: int = 500) -> float:
     """Sum of per-example mismatch penalties. A crash, type error, or fuel
     exhaustion on any example contributes a fixed high penalty - the search
-    never sees an uncaught exception."""
+    never sees an uncaught exception. ``_mismatch`` itself is inside the
+    guard too: e.g. a nested list (from a badly-generated ``Map``/``Filter``
+    whose body itself returns a list) can raise inside the comparison, not
+    just inside ``evaluate`` - that must be penalized the same way, not
+    allowed to crash the whole search."""
     total = 0.0
     for example in examples:
         try:
             result = evaluate(node, dict(example.inputs), Fuel(fuel_budget))
+            total += _mismatch(result, example.expected_output)
         except Exception:
             total += 10.0
-            continue
-        total += _mismatch(result, example.expected_output)
     return total
 
 

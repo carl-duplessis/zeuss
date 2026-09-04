@@ -11,16 +11,16 @@ recursive call and fold iteration spends from, raising :class:`FuelExhausted`
 (never an uncaught crash) if it runs out. This is a pure-Python tree
 interpreter - no ``eval``/``exec`` of untrusted strings.
 
-Honest scoping note: the mutation/crossover search in :mod:`.search` only
+Honest scoping note: the mutation/crossover search in :mod:`.search`
 generates and mutates ``Const``/``Var``/``ListLit``/``BinOp``/``UnaryOp``/
-``If``/``Let``/``Fold`` programs - loops, conditionals, and lists are within
-the auto-search's reach. ``Letrec``/``Recur`` (recursion) is fully supported
-by this interpreter and directly testable on hand-built programs, but the
-search does not attempt to *synthesize* new recursive definitions from
-scratch: safely generating well-scoped recursive candidates via random
-mutation is a substantially harder search-space design problem than the
-loop/conditional/list constructs this phase targets, and claiming otherwise
-would not be honest.
+``If``/``Let``/``Fold``/``Length``/``Index``/``Map``/``Filter`` programs -
+loops, conditionals, and list processing are within the auto-search's reach.
+``Letrec``/``Recur`` (recursion) is fully supported by this interpreter and
+directly testable on hand-built programs; whether the search can also
+*synthesize* new recursive definitions from scratch (not just evaluate
+hand-built ones) is addressed separately in :mod:`.search`'s own docstring,
+since safely generating well-scoped recursive candidates via random mutation
+is a materially harder search-space design problem than the other constructs.
 """
 from __future__ import annotations
 
@@ -86,6 +86,38 @@ class Fold:
 
 
 @dataclass(frozen=True)
+class Length:
+    list_expr: "Node"
+
+
+@dataclass(frozen=True)
+class Index:
+    """List indexing; an out-of-range index raises ``IndexError`` (caught
+    upstream as a scoring penalty, same as any other type error)."""
+
+    list_expr: "Node"
+    index_expr: "Node"
+
+
+@dataclass(frozen=True)
+class Map:
+    """A structural (guaranteed-terminating) map over a list."""
+
+    list_expr: "Node"
+    var_item: str
+    body: "Node"
+
+
+@dataclass(frozen=True)
+class Filter:
+    """A structural (guaranteed-terminating) filter over a list."""
+
+    list_expr: "Node"
+    var_item: str
+    predicate: "Node"
+
+
+@dataclass(frozen=True)
 class Letrec:
     """Binds ``name`` as a recursive function visible inside both ``body``
     (its own definition, so it can ``Recur`` into itself) and ``in_expr``."""
@@ -110,7 +142,9 @@ class Closure:
     body: "Node"
 
 
-Node = Union[Const, Var, ListLit, BinOp, UnaryOp, If, Let, Fold, Letrec, Recur]
+Node = Union[
+    Const, Var, ListLit, BinOp, UnaryOp, If, Let, Fold, Length, Index, Map, Filter, Letrec, Recur
+]
 
 
 class Fuel:
@@ -138,10 +172,22 @@ def _apply_binop(op: str, a, b):
         if b == 0:
             raise ZeroDivisionError("division by zero")
         return int(a) // int(b)
+    if op == "%":
+        if b == 0:
+            raise ZeroDivisionError("modulo by zero")
+        return int(a) % int(b)
     if op == "==":
         return a == b
+    if op == "!=":
+        return a != b
     if op == "<":
         return a < b
+    if op == "<=":
+        return a <= b
+    if op == ">":
+        return a > b
+    if op == ">=":
+        return a >= b
     if op == "and":
         return bool(a) and bool(b)
     if op == "or":
@@ -188,6 +234,27 @@ def evaluate(node: Node, env: dict, fuel: Fuel):
             fuel.spend()
             acc = evaluate(node.body, {**env, node.var_acc: acc, node.var_item: item}, fuel)
         return acc
+    if isinstance(node, Length):
+        return len(evaluate(node.list_expr, env, fuel))
+    if isinstance(node, Index):
+        items = evaluate(node.list_expr, env, fuel)
+        idx = evaluate(node.index_expr, env, fuel)
+        return items[idx]
+    if isinstance(node, Map):
+        items = evaluate(node.list_expr, env, fuel)
+        result = []
+        for item in items:
+            fuel.spend()
+            result.append(evaluate(node.body, {**env, node.var_item: item}, fuel))
+        return result
+    if isinstance(node, Filter):
+        items = evaluate(node.list_expr, env, fuel)
+        result = []
+        for item in items:
+            fuel.spend()
+            if evaluate(node.predicate, {**env, node.var_item: item}, fuel):
+                result.append(item)
+        return result
     if isinstance(node, Letrec):
         new_env = dict(env)
         new_env[node.name] = Closure(node.params, node.body)
@@ -219,6 +286,14 @@ def children(node: Node) -> list["Node"]:
         return [node.value, node.body]
     if isinstance(node, Fold):
         return [node.list_expr, node.init, node.body]
+    if isinstance(node, Length):
+        return [node.list_expr]
+    if isinstance(node, Index):
+        return [node.list_expr, node.index_expr]
+    if isinstance(node, Map):
+        return [node.list_expr, node.body]
+    if isinstance(node, Filter):
+        return [node.list_expr, node.predicate]
     if isinstance(node, Letrec):
         return [node.body, node.in_expr]
     if isinstance(node, Recur):
@@ -241,6 +316,14 @@ def rebuild(node: Node, new_children: list["Node"]) -> "Node":
         return Let(node.name, new_children[0], new_children[1])
     if isinstance(node, Fold):
         return Fold(new_children[0], new_children[1], node.var_acc, node.var_item, new_children[2])
+    if isinstance(node, Length):
+        return Length(new_children[0])
+    if isinstance(node, Index):
+        return Index(new_children[0], new_children[1])
+    if isinstance(node, Map):
+        return Map(new_children[0], node.var_item, new_children[1])
+    if isinstance(node, Filter):
+        return Filter(new_children[0], node.var_item, new_children[1])
     if isinstance(node, Letrec):
         return Letrec(node.name, node.params, new_children[0], new_children[1])
     if isinstance(node, Recur):
@@ -273,6 +356,14 @@ def pretty(node: Node) -> str:
             f"(fold {node.var_acc},{node.var_item} in {pretty(node.list_expr)} "
             f"from {pretty(node.init)}: {pretty(node.body)})"
         )
+    if isinstance(node, Length):
+        return f"len({pretty(node.list_expr)})"
+    if isinstance(node, Index):
+        return f"{pretty(node.list_expr)}[{pretty(node.index_expr)}]"
+    if isinstance(node, Map):
+        return f"[map {node.var_item} in {pretty(node.list_expr)}: {pretty(node.body)}]"
+    if isinstance(node, Filter):
+        return f"[filter {node.var_item} in {pretty(node.list_expr)} if {pretty(node.predicate)}]"
     if isinstance(node, Letrec):
         return f"(letrec {node.name}({', '.join(node.params)}) = {pretty(node.body)} in {pretty(node.in_expr)})"
     if isinstance(node, Recur):
