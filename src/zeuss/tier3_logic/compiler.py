@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-import numpy as np
-
 
 def clamp(x: float) -> float:
     return float(min(1.0, max(0.0, x)))

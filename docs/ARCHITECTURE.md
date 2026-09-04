@@ -63,5 +63,9 @@ from symbolic axioms to Tier-2 basins.
 
 ## Backends
 `backend.py` exposes `xp` (NumPy or JAX), `HAS_JAX`, and complex dtypes. Tier-2
-currently computes in NumPy for a guaranteed, tested path; porting to `xp`
-end-to-end (for `grad`/`jit`) is the next milestone.
+substrate math is now routed through `xp` end-to-end, so the same code runs on
+NumPy (default) or JAX (`ZEUSS_BACKEND=jax`). Randomness is still drawn from an
+explicit NumPy `Generator` and *lifted* onto the backend, so a given seed yields
+identical hypervectors on either backend. `test_backend.py` pins the routing and
+carries a NumPy↔JAX parity check that activates once JAX is installed. Remaining
+milestone: a `jax.grad`-based `energy.settle` variant (see `docs/ROADMAP.md`).

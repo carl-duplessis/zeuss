@@ -13,30 +13,33 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..backend import RDTYPE, xp
 from .hypervectors import Codebook, bundle, normalize
 
 
-def softmax(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=np.float64)
-    x = x - np.max(x)
-    e = np.exp(x)
-    return e / np.sum(e)
+def softmax(x) -> "xp.ndarray":
+    x = xp.asarray(x, dtype=RDTYPE)
+    x = x - xp.max(x)
+    e = xp.exp(x)
+    return e / xp.sum(e)
 
 
-def entropy(probs: np.ndarray, base: float = 2.0) -> float:
+def entropy(probs, base: float = 2.0) -> float:
     """Shannon entropy of a probability vector (bits by default)."""
-    p = np.asarray(probs, dtype=np.float64)
-    p = p[p > 0]
-    return float(-np.sum(p * (np.log(p) / np.log(base))))
+    p = xp.asarray(probs, dtype=RDTYPE)
+    # Mask zeros with xp.where (rather than boolean indexing) so the reduction
+    # stays a fixed shape and is safe under jit/vmap: 0 * log(1) == 0.
+    safe = xp.where(p > 0, p, 1.0)
+    return float(-xp.sum(p * (xp.log(safe) / np.log(base))))
 
 
-def occupancy(codebook: Codebook, z: np.ndarray, inverse_temperature: float = 1.0) -> np.ndarray:
+def occupancy(codebook: Codebook, z, inverse_temperature: float = 1.0) -> "xp.ndarray":
     """Probability the state occupies each symbol basin (a softmax over sims)."""
-    sims = np.array(list(codebook.similarities(z).values()), dtype=np.float64)
+    sims = xp.asarray(list(codebook.similarities(z).values()), dtype=RDTYPE)
     return softmax(inverse_temperature * sims)
 
 
-def collapse(codebook: Codebook, z: np.ndarray, inverse_temperature: float = 8.0):
+def collapse(codebook: Codebook, z, inverse_temperature: float = 8.0):
     """Collapse ``z`` toward the codebook under an inverse temperature.
 
     Returns ``(z_collapsed, info)`` where ``info`` carries the occupancy
@@ -48,7 +51,7 @@ def collapse(codebook: Codebook, z: np.ndarray, inverse_temperature: float = 8.0
     probs = occupancy(codebook, z, inverse_temperature)
     mats = codebook.matrix()
     z_soft = bundle(list(mats), weights=list(probs))
-    k = int(np.argmax(probs))
+    k = int(xp.argmax(probs))
     info = {
         "names": names,
         "probs": probs,
@@ -59,7 +62,7 @@ def collapse(codebook: Codebook, z: np.ndarray, inverse_temperature: float = 8.0
     return normalize(z_soft), info
 
 
-def anneal(codebook: Codebook, z: np.ndarray, schedule=(0.5, 1, 2, 4, 8, 16, 32)):
+def anneal(codebook: Codebook, z, schedule=(0.5, 1, 2, 4, 8, 16, 32)):
     """Run a cooling schedule and record entropy dropping toward a decision.
 
     Returns a list of per-step info dicts - a trace of continuous ambiguity

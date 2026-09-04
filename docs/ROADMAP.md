@@ -11,7 +11,7 @@
 - [x] 17 passing tests, runnable demo, CLI.
 
 ## v0.2 — JAX-native substrate
-- [ ] Route all Tier-2 ops through `zeuss.backend.xp`.
+- [x] Route all Tier-2 ops through `zeuss.backend.xp`.
 - [ ] `energy.settle_grad`: energy descent via `jax.grad` on phase angles.
 - [ ] `jit`/`vmap` batched collapse over many probes.
 - [ ] Property tests run on both backends.
