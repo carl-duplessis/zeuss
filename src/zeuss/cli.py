@@ -95,6 +95,23 @@ def _audit() -> int:
         f"frustrated triangle: H0={frustrated.h0_dimension()} H1={frustrated.h1_dimension()}"
         f"  (nontrivial section exists: {not frustrated.has_only_trivial_section()})"
     )
+
+    print("\nScenario 3: wiring the audit directly into the compile step")
+    from .tier2_substrate.hypervectors import Codebook
+    from .tier3_logic.grounding import InconsistentTheoriesError, compile_theories
+
+    cb = Codebook(dim=2048, seed=0)
+    agreeing = {"sensorA": theories["sensorA"], "sensorB": theories["sensorB"]}
+    agreeing_vars = {"sensorA": ["door_open"], "sensorB": ["door_open"]}
+    land = compile_theories(cb, agreeing, agreeing_vars)
+    print(f"sensorA + sensorB agree -> compiled a Landscape with {len(land.attractors)} attractor(s)")
+
+    try:
+        compile_theories(cb, theories, shared_vars)
+        print("ERROR: expected InconsistentTheoriesError")
+    except InconsistentTheoriesError as exc:
+        print(f"sensorA + sensorB + sensorC disagree -> compile_theories raised instead of "
+              f"silently blending: {exc}")
     return 0
 
 

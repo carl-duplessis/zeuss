@@ -92,7 +92,13 @@ the theory's Boolean corners, and registers every low-energy corner as a
 `Landscape` attractor weighted by `exp(-energy)` — settling from any start
 state relaxes toward the theory's satisfying valuations, and `readout` reads
 the settled truth values back out. Scoped to `O(2**n)` corner enumeration,
-matching `Theory`'s expected small-`n` scale.
+matching `Theory`'s expected small-`n` scale. `compile_theories` wires the
+sheaf audit (below) directly into this compile step: it runs
+`sheaf.from_theories` over several named agents' theories first, raising
+`InconsistentTheoriesError` (with the specific violated edges) if any two
+disagree on a shared variable, instead of silently merging the contradiction
+into an unexplained fuzzy `Landscape`; on success it compiles the union of
+every agent's rules via `compile_theory`.
 
 ### Sheaf cohomology auditor (`sheaf.py`)
 A graph-level (1-skeleton) cellular sheaf: named scalar-stalk vertices, edges
