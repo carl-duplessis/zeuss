@@ -11,6 +11,8 @@ Runs on NumPy or JAX (``ZEUSS_BACKEND=jax``).
 from __future__ import annotations
 
 from zeuss.qa import ask, demo_ontology
+from zeuss.tier2_substrate.energy import Landscape
+from zeuss.tier2_substrate.spiking import SpikingGate, group_seeds
 
 
 def main() -> None:
@@ -36,6 +38,26 @@ def main() -> None:
         answer = ask(onto, memory, subject, relation)
         print(f"Q: {subject} {relation} ?   ({note})")
         print(f"A: {answer}\n")
+
+    print("== Event-spiking: which relation-groups activate for a query? ==")
+    by_relation: dict[str, set] = {}
+    for s, r, o in onto.triples:
+        by_relation.setdefault(r, set()).update((s, o))
+    land = Landscape()
+    group_of = []
+    for rel, entities in by_relation.items():
+        for name in entities:
+            land.add(onto.entity(name), 1.0)
+            group_of.append(rel)
+    gate = SpikingGate(threshold=0.1, refractory_steps=0)
+    seeds = group_seeds(land, group_of)
+    residue = onto.step(memory, onto.entity("socrates"), "is_a")
+    active = gate.poll(residue, seeds)
+    active_attractors = sum(1 for g in group_of if g in active)
+    print(f"relation-groups: {list(seeds)}")
+    print(f"query 'socrates is_a ?' activates: {active}")
+    print(f"{active_attractors}/{len(land.attractors)} attractors stayed in play"
+          f" - the rest never had to be scored.")
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@
       an unambiguous probe grows fast), instead of a fixed static schedule.
 
 ## v0.7 — event-spiking asynchronous activation
-- [ ] `tier2_substrate/spiking.py`: a `SpikingGate` with refractory hysteresis
+- [x] `tier2_substrate/spiking.py`: a `SpikingGate` with refractory hysteresis
       that gates which `Landscape` attractor groups participate in `settle`,
       skipping compute on dormant regions.
 

@@ -50,6 +50,17 @@ size by how much the *previous* step actually reduced energy — shrinking near
 plateaus/saddles, growing on open gradients — and stops early on convergence
 instead of always running a fixed step count (the "liquid time-step" idea).
 
+### Event-spiking activation gate (`spiking.py`)
+`SpikingGate` gates which named attractor groups of a `Landscape` participate
+in a settle step: a group activates when a probe's similarity to it crosses a
+threshold, and stays active through a short refractory window afterward
+(hysteresis, so a probe hovering near the boundary doesn't thrash the gate).
+`gated_settle` re-polls every few steps and delegates the actual descent to
+`settle` on a filtered sub-`Landscape` of just the active groups — dormant
+groups are never scored at all. The concrete content behind "neuromorphic
+threshold-gated activation": a sparse compute mask, not a spiking-circuit
+simulation.
+
 ### Resonance (`resonance.py`) — Frontier 3
 `interfere` superposes waveforms *without* per-element renormalisation, so
 constructive interference preserves amplitude and destructive interference
