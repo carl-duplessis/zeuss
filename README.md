@@ -36,7 +36,7 @@ pytest -q                             # 17 tests, CPU-only
 No install needed to try it:
 
 ```bash
-PYTHONPATH="src:." python examples/demo_collapse.py
+PYTHONPATH="src:." python demos/demo_collapse.py
 ```
 
 Expected demo output shows entropy falling from ~2.3 bits to 0 as a noisy probe
@@ -66,7 +66,8 @@ src/zeuss/
   tier2_substrate/      # hypervectors, collapse, energy, resonance
   tier3_logic/          # ontology (networkx), compiler (t-norms)
   cli.py                # `python -m zeuss ...`
-examples/demo_collapse.py
+  tier4_synthesis/       # DSL, encoding, and GP search for program synthesis
+demos/demo_collapse.py, ask_demo.py
 tests/                  # pytest suite
 docs/                   # ARCHITECTURE, ROADMAP, REMOTE_CONTROL
 ```

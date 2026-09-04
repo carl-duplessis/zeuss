@@ -29,7 +29,7 @@ def _info() -> int:
 
 
 def _demo() -> int:
-    from examples.demo_collapse import main as demo_main  # type: ignore
+    from demos.demo_collapse import main as demo_main  # type: ignore
 
     demo_main()
     return 0
@@ -47,7 +47,7 @@ def _ask(subject: str | None, relation: str | None) -> int:
 
     # No specific question -> run the full narrated demo.
     try:
-        from examples.ask_demo import main as ask_main  # type: ignore
+        from demos.ask_demo import main as ask_main  # type: ignore
 
         ask_main()
     except Exception:
