@@ -23,7 +23,16 @@ from zeuss.tier4_synthesis.dsl import (
     evaluate,
 )
 from zeuss.tier4_synthesis.encode import encode_node
-from zeuss.tier4_synthesis.search import Example, crossover, mutate, program_energy, random_program, synthesize
+from zeuss.tier4_synthesis.search import (
+    Example,
+    crossover,
+    extract_template_choices,
+    mutate,
+    program_energy,
+    random_program,
+    synthesize,
+)
+from zeuss.tier4_synthesis.search import _recursive_template
 
 
 def test_fold_computes_a_bounded_loop():
@@ -100,16 +109,17 @@ def test_unbounded_value_magnitude_raises_value_overflow_not_a_hang():
 
 
 def test_recursion_synthesis_is_safe_but_not_reliably_found():
-    """Honest finding from extending this DSL: Letrec/Recur generation and
-    mutation are scope-correct and safe (no crashes, no runaway bloat - see
-    search.py's module docstring), and the search occasionally stumbles onto
-    a Letrec/Recur candidate, but blind mutation/crossover does not reliably
-    *discover* a correct solution for a target that genuinely requires
-    recursion. ``2**n`` has no shortcut in this arithmetic-only grammar (no
-    power operator), so it can only be solved by a real recursive definition
-    - and it is not found within a practical budget. This test pins down
-    that the search fails *safely* (no crash, an honest ``verified=False``),
-    not that recursion synthesis works.
+    """Honest finding: Letrec/Recur generation and mutation are scope-correct
+    and safe (no crashes, no runaway bloat, no bignum hangs - see search.py's
+    module docstring), and resonance-biased template seeding *can* find
+    genuinely recursive solutions (see the test below) - but not reliably.
+    This exact seed/budget still fails even with the bias enabled (the
+    default): ``2**n`` has no shortcut in this arithmetic-only grammar (no
+    power operator), so it can only be solved by a real recursive
+    definition, and blind mutation/crossover plus the bias together still
+    don't find it here. Pins down that failure is *safe* (no crash, an
+    honest ``verified=False``), not that recursion synthesis is unreliable
+    in every case - see ``test_resonant_bias_can_discover_genuine_recursion``.
     """
     examples = [Example({"n": n}, 2**n) for n in range(5)]
     rng = np.random.default_rng(0)
@@ -119,6 +129,44 @@ def test_recursion_synthesis_is_safe_but_not_reliably_found():
     assert not verified
     assert len(trace) == 40
     assert program_energy(best, examples) > 0
+
+
+def test_extract_template_choices_round_trips_and_rejects_non_templates():
+    rng = np.random.default_rng(0)
+    node, choices = _recursive_template(["n"], (), rng)
+    assert extract_template_choices(node) == choices
+    assert extract_template_choices(Const(1)) is None
+    assert extract_template_choices(Var("n")) is None
+
+
+def test_resonant_bias_can_discover_genuine_recursion():
+    """The positive result: resonance-guided template seeding
+    (ResonantBias - an Estimation-of-Distribution prior over the template's
+    hole-fillers, read/written via the same hypervector resonance machinery
+    as the rest of this project, instead of blind uniform sampling) finds a
+    real, held-out-generalizing recursive definition of ``2**n`` - a target
+    that has no non-recursive shortcut in this grammar and that plain
+    uniform template sampling did not find across many seeds tried while
+    developing this. Not claimed to be reliable (see the test above for a
+    seed where even the bias doesn't find it) - claimed to work at least
+    sometimes, on a target requiring genuine recursion, which is real
+    progress over "safe but never observed to succeed."
+    """
+    examples = [Example({"n": n}, 2**n) for n in range(5)]
+    rng = np.random.default_rng(1)
+    best, _trace, verified = synthesize(
+        ["n"],
+        examples,
+        population_size=300,
+        max_generations=80,
+        max_depth=4,
+        allow_recursion=True,
+        resonant_bias=True,
+        rng=rng,
+    )
+    assert verified
+    for n, expected in [(5, 32), (6, 64), (7, 128), (8, 256)]:
+        assert evaluate(best, {"n": n}, Fuel(2000)) == expected
 
 
 def test_random_mutate_crossover_produce_valid_trees():

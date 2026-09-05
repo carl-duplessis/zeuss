@@ -143,6 +143,38 @@
       synthesis via blind mutation is known to be substantially harder than
       iterative/functional constructs.
 
+## v0.14 — a different paradigm: resonance-guided template evolution
+- [x] Per user request to "try the untried" rather than keep tuning classical
+      GP knobs: `tier4_synthesis/resonance_bias.py` adds `ResonantBias`, an
+      Estimation-of-Distribution prior over `_recursive_template`'s
+      hole-fillers implemented with the same hypervector primitives every
+      other tier uses (`Codebook`, weighted superposition, similarity
+      readout via `collapse.softmax`) instead of a bolted-on statistics
+      table - a genuinely different search paradigm (belief tracked and read
+      via resonance) rather than another round of hyperparameter tuning on
+      the same blind-mutation algorithm. `extract_template_choices` matches
+      *observed structure*, not provenance, so the bias learns from any
+      population member that evolved into the template shape, not just ones
+      the template generator produced. Reinforcement weight is
+      `exp(-energy)` (the same Boltzmann convention `grounding.py` uses at
+      compile time). Found and fixed a real design flaw before shipping: an
+      initial `beta=4.0` made a *single* reinforcement event lock in a choice
+      96% of the time (100% after three) - far too greedy, killing
+      exploration exactly when it matters; retuned to `beta=0.2`, giving a
+      gradual, evidence-proportional shift instead of instant collapse.
+
+      Honest result, run and re-run rather than assumed: with
+      `allow_recursion=True, resonant_bias=True` (the new default once
+      recursion is opted into), the search **found** a genuinely correct,
+      held-out-generalizing recursive definition of `2**n`
+      (`f(n) = 1 if n<1 else f(n-1)+f(n-1)`, correct for n up to 8, none of
+      which were training examples) on 2 of 9 seeds tried at the same budget
+      that found it 0 times across every seed tried without the bias, both
+      earlier in this session and in this same comparison. This is a real,
+      measured improvement over the v0.13 negative result - not a claim that
+      recursion synthesis is now reliable (7 of 9 seeds still fail). `zeuss
+      synth` CLI demo now includes this as Scenario 3.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

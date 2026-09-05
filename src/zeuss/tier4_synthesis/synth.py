@@ -28,9 +28,17 @@ def synthesize(
     population_size: int = 200,
     max_generations: int = 60,
     max_depth: int = 4,
+    allow_recursion: bool = False,
+    resonant_bias: bool = True,
     rng: np.random.Generator | None = None,
 ):
     """Search for a program satisfying ``examples``.
+
+    ``allow_recursion`` opts into ``Letrec``/``Recur`` generation (off by
+    default - see :func:`.search.synthesize`'s docstring for why); when set,
+    ``resonant_bias`` enables resonance-guided template seeding, which can
+    discover genuinely recursive solutions that uniform random search does
+    not reliably find (see :mod:`.resonance_bias`).
 
     Returns ``(best_node, beta_trace, verified)`` - see :func:`.search.synthesize`.
     """
@@ -41,6 +49,8 @@ def synthesize(
         population_size=population_size,
         max_generations=max_generations,
         max_depth=max_depth,
+        allow_recursion=allow_recursion,
+        resonant_bias=resonant_bias,
         rng=rng,
     )
 

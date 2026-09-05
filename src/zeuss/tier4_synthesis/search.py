@@ -73,8 +73,10 @@ from .dsl import (
     Var,
 )
 from ..tier2_substrate.collapse import softmax
+from ..tier2_substrate.hypervectors import Codebook
 from .dsl import children as _children
 from .dsl import count_nodes, evaluate, rebuild
+from .resonance_bias import ResonantBias
 
 _BINOPS = ("+", "-", "*", "//", "%", "==", "!=", "<", "<=", ">", ">=", "and", "or")
 _UNARYOPS = ("-", "not")
@@ -204,9 +206,24 @@ def _grow(
     )
 
 
+# The hole categories _recursive_template fills in, and their possible
+# values - shared with ResonantBias so a bias object's categories always
+# line up with what the template actually samples.
+TEMPLATE_CATEGORIES: dict[str, list] = {
+    "cmp": ["==", "<=", "<"],
+    "base_const": [0, 1, 2],
+    "base_val": [0, 1, 2],
+    "step": [1, 2],
+    "op": list(_BINOPS),
+}
+
+
 def _recursive_template(
-    inputs: list[str], list_inputs: tuple[str, ...], rng: np.random.Generator
-) -> Node | None:
+    inputs: list[str],
+    list_inputs: tuple[str, ...],
+    rng: np.random.Generator,
+    bias: "ResonantBias | None" = None,
+) -> tuple[Node, dict] | tuple[None, None]:
     """A structural bias toward the single most common recursive shape:
     decrement-and-combine - ``letrec f(p) = if p CMP k then base else p OP
     f(p - step) in f(seed)``. GP still has to tune the comparison, constants,
@@ -214,25 +231,90 @@ def _recursive_template(
     instead of needing mutation to discover it from nothing: empirically,
     under 5% of random depth-4 trees even contain a ``Letrec`` with an
     ``If``-shaped body (the bare minimum for a base case) - see the module
-    docstring. Returns ``None`` if there's no scalar input to recurse on.
+    docstring. Returns ``(None, None)`` if there's no scalar input to recurse
+    on. If ``bias`` is given, hole-fillers are drawn from it (resonance-biased
+    toward historically successful values) instead of uniformly at random.
+    Returns ``(node, choices)`` - ``choices`` is needed so the caller can
+    later :meth:`ResonantBias.reinforce` based on how the individual scores.
     """
     scalars = [n for n in inputs if n not in list_inputs]
     if not scalars:
-        return None
+        return None, None
     name = f"_rec{int(rng.integers(0, 10_000))}"
     param = f"_p{int(rng.integers(0, 10_000))}"
     seed_var = str(rng.choice(scalars))
-    cmp = str(rng.choice(["==", "<=", "<"]))
-    base_const = int(rng.integers(0, 3))
-    base_val = int(rng.integers(0, 3))
-    step = int(rng.integers(1, 3))
-    op = _BINOPS[int(rng.integers(0, len(_BINOPS)))]
+    if bias is not None:
+        cmp = bias.sample("cmp", rng)
+        base_const = bias.sample("base_const", rng)
+        base_val = bias.sample("base_val", rng)
+        step = bias.sample("step", rng)
+        op = bias.sample("op", rng)
+    else:
+        cmp = str(rng.choice(TEMPLATE_CATEGORIES["cmp"]))
+        base_const = int(rng.choice(TEMPLATE_CATEGORIES["base_const"]))
+        base_val = int(rng.choice(TEMPLATE_CATEGORIES["base_val"]))
+        step = int(rng.choice(TEMPLATE_CATEGORIES["step"]))
+        op = str(rng.choice(TEMPLATE_CATEGORIES["op"]))
+    choices = {"cmp": cmp, "base_const": base_const, "base_val": base_val, "step": step, "op": op}
     body = If(
         BinOp(cmp, Var(param), Const(base_const)),
         Const(base_val),
         BinOp(op, Var(param), Recur(name, (BinOp("-", Var(param), Const(step)),))),
     )
-    return Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
+    node = Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
+    return node, choices
+
+
+def extract_template_choices(node: Node) -> dict | None:
+    """If ``node`` structurally matches the decrement-and-combine template
+    shape - regardless of whether it came from :func:`_recursive_template` or
+    was evolved into that shape by ordinary mutation/crossover - extract its
+    hole-fillers for :meth:`ResonantBias.reinforce`. Returns ``None`` if it
+    doesn't match. Matching on observed *structure* rather than provenance
+    means the bias learns from whatever the population actually converges on,
+    not just from candidates the template generator happened to produce.
+    """
+    if not isinstance(node, Letrec) or len(node.params) != 1:
+        return None
+    param = node.params[0]
+    body = node.body
+    if not isinstance(body, If):
+        return None
+    cond = body.cond
+    if not (
+        isinstance(cond, BinOp)
+        and isinstance(cond.left, Var)
+        and cond.left.name == param
+        and isinstance(cond.right, Const)
+    ):
+        return None
+    if not isinstance(body.then, Const):
+        return None
+    combine = body.orelse
+    if not (isinstance(combine, BinOp) and isinstance(combine.left, Var) and combine.left.name == param):
+        return None
+    recur_call = combine.right
+    if not (isinstance(recur_call, Recur) and recur_call.name == node.name and len(recur_call.args) == 1):
+        return None
+    step_expr = recur_call.args[0]
+    if not (
+        isinstance(step_expr, BinOp)
+        and step_expr.op == "-"
+        and isinstance(step_expr.left, Var)
+        and step_expr.left.name == param
+        and isinstance(step_expr.right, Const)
+    ):
+        return None
+    choices = {
+        "cmp": cond.op,
+        "base_const": cond.right.value,
+        "base_val": body.then.value,
+        "op": combine.op,
+        "step": step_expr.right.value,
+    }
+    if any(choices[k] not in TEMPLATE_CATEGORIES[k] for k in choices):
+        return None  # a value outside the known category set - not reinforceable
+    return choices
 
 
 def random_program(
@@ -242,6 +324,7 @@ def random_program(
     list_inputs: tuple[str, ...] = (),
     template_rate: float = 0.15,
     allow_recursion: bool = False,
+    bias: ResonantBias | None = None,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -252,10 +335,12 @@ def random_program(
     When ``allow_recursion`` is set, ``template_rate`` is the probability of
     returning a :func:`_recursive_template` skeleton instead of pure random
     growth - see its docstring for why that matters for actually finding
-    recursive solutions.
+    recursive solutions. ``bias`` (a :class:`ResonantBias`), if given, steers
+    the template's hole-fillers toward historically successful values instead
+    of uniform random choice.
     """
     if allow_recursion and template_rate > 0 and rng.random() < template_rate:
-        template = _recursive_template(inputs, tuple(list_inputs), rng)
+        template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias)
         if template is not None:
             return template
     return _grow(list(inputs), tuple(list_inputs), (), rng, max_depth, allow_recursion)
@@ -306,6 +391,7 @@ def _replace_at_scoped(
     recur_ctx: tuple[tuple[str, int], ...],
     template_rate: float = 0.15,
     allow_recursion: bool = False,
+    bias: ResonantBias | None = None,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
@@ -317,13 +403,13 @@ def _replace_at_scoped(
     counter[0] += 1
     if idx == target_index:
         if allow_recursion and template_rate > 0 and rng.random() < template_rate:
-            template = _recursive_template(inputs, list_inputs, rng)
+            template, _choices = _recursive_template(inputs, list_inputs, rng, bias)
             if template is not None:
                 return template
         return _grow(inputs, list_inputs, recur_ctx, rng, max(1, max_depth - 1), allow_recursion)
 
     scalars = [n for n in inputs if n not in list_inputs]
-    kwargs = {"template_rate": template_rate, "allow_recursion": allow_recursion}
+    kwargs = {"template_rate": template_rate, "allow_recursion": allow_recursion, "bias": bias}
 
     if isinstance(node, Let):
         new_value = _replace_at_scoped(
@@ -398,6 +484,7 @@ def mutate(
     list_inputs: tuple[str, ...] = (),
     template_rate: float = 0.15,
     allow_recursion: bool = False,
+    bias: ResonantBias | None = None,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring)."""
@@ -414,6 +501,7 @@ def mutate(
         (),
         template_rate=template_rate,
         allow_recursion=allow_recursion,
+        bias=bias,
     )
 
 
@@ -492,6 +580,7 @@ def synthesize(
     parsimony: float = 0.02,
     allow_recursion: bool = False,
     template_rate: float = 0.15,
+    resonant_bias: bool = True,
     rng: np.random.Generator | None = None,
 ):
     """Search for a program satisfying ``examples`` via mutation/crossover,
@@ -521,13 +610,30 @@ def synthesize(
     growth - see its docstring for why that matters for actually *finding*
     recursive solutions, not just safely evaluating hand-built ones.
 
+    ``resonant_bias`` (only relevant when ``allow_recursion=True``) enables
+    :class:`~zeuss.tier4_synthesis.resonance_bias.ResonantBias`: an
+    Estimation-of-Distribution prior over the template's hole-fillers, read
+    and written via the same hypervector resonance machinery the rest of
+    this project uses instead of a bolted-on statistics table. Every
+    generation, any population member that structurally matches the template
+    shape (see :func:`extract_template_choices` - regardless of whether it
+    came from the template generator or was evolved into that shape)
+    reinforces the bias in proportion to ``exp(-energy)``, so later
+    generations' template draws lean toward hole-fillers that have actually
+    correlated with lower energy in *this run*, not a fixed prior.
+
     Returns ``(best_node, beta_trace, verified)``. ``verified`` re-runs
     :func:`program_energy` on the winner one more time, post-hoc - never
     trust the search's own bookkeeping without re-checking.
     """
     rng = np.random.default_rng() if rng is None else rng
+    bias: ResonantBias | None = None
+    if allow_recursion and resonant_bias:
+        bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+        bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
+
     population = [
-        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion)
+        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias)
         for _ in range(population_size)
     ]
 
@@ -546,6 +652,12 @@ def synthesize(
         if best_energy <= 1e-9:
             break
 
+        if bias is not None:
+            for p, e in zip(population, raw_energies):
+                choices = extract_template_choices(p)
+                if choices is not None:
+                    bias.reinforce(choices, weight=float(np.exp(-e)))
+
         sizes = np.array([count_nodes(p) for p in population], dtype=float)
         selection_energies = raw_energies + parsimony * sizes
         probs = softmax(-beta * selection_energies)
@@ -555,7 +667,9 @@ def synthesize(
             if rng.random() < 0.5:
                 child = crossover(population[i], population[j], rng)
             else:
-                child = mutate(population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion)
+                child = mutate(
+                    population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias
+                )
             next_population.append(child)
         population = next_population
         beta = min(beta * beta_growth, beta_max)
