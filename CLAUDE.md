@@ -46,10 +46,19 @@ energy minimisation, resonance) over designs that special-case a symbolic path.
 
 ## Good first tasks (see docs/ROADMAP.md for the full list)
 
-- Port `tier2_substrate` ops to use `xp` end-to-end and add a JAX `grad`-based
-  energy-descent variant of `energy.settle`.
+- Add a JAX `grad`-based energy-descent variant of `energy.settle`
+  (`energy.settle_grad`) — the `xp` routing it needs is already done (v0.2).
 - Implement a sequence encoder (bind + permute) and a cleanup-memory decoder.
 - Add a `matplotlib` experiment that plots entropy vs. β and energy vs. step.
+- Improve asymmetric-recursion (Fibonacci-class) discovery reliability
+  (`tier4_synthesis`, see `docs/ROADMAP.md` v0.16): at the current
+  stagnation-annealed `delta_p1` schedule, seed 4 fails to verify and seed 7
+  "verifies" with a solution that doesn't generalize to held-out points —
+  either tune the schedule, or check candidates against a couple of
+  extra/held-out points *during* the search so overfit solutions never win.
+- Extend `_recursive_template`'s base case beyond a fixed `Const(base_val)`
+  (e.g. allow `Var(param)`) so true zero-indexed Fibonacci (`F(0)=0`) is
+  expressible, not just the shifted `F(1)=F(2)=1` variant.
 
 ## Don't
 
