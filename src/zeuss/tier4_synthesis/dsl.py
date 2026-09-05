@@ -11,6 +11,18 @@ recursive call and fold iteration spends from, raising :class:`FuelExhausted`
 (never an uncaught crash) if it runs out. This is a pure-Python tree
 interpreter - no ``eval``/``exec`` of untrusted strings.
 
+Bounding the *call count* is not the same as bounding *wall-clock time*:
+Python integers have arbitrary precision, so a recursive call whose argument
+*grows* instead of shrinking toward the base case (e.g. squaring instead of
+decrementing - found in a real candidate the search generated) reaches
+numbers with millions of bits well within the fuel budget's call-count limit.
+Fuel bounds how many *steps* happen; it does not bound how *expensive* each
+step's arithmetic is once the operands are astronomically large. ``_MAX_MAGNITUDE``
+closes that gap: every arithmetic result is checked, and an out-of-range
+value raises :class:`ValueOverflow` (caught the same way as any other
+evaluation error) instead of silently producing a bignum that makes every
+later operation catastrophically slow.
+
 Honest scoping note: the mutation/crossover search in :mod:`.search`
 generates and mutates ``Const``/``Var``/``ListLit``/``BinOp``/``UnaryOp``/
 ``If``/``Let``/``Fold``/``Length``/``Index``/``Map``/``Filter`` programs -
@@ -30,6 +42,22 @@ from typing import Union
 
 class FuelExhausted(Exception):
     """Raised when a bounded-recursion/fold computation exceeds its fuel budget."""
+
+
+class ValueOverflow(Exception):
+    """Raised when an intermediate value's magnitude exceeds ``_MAX_MAGNITUDE``."""
+
+
+# Comfortably beyond anything a legitimate small-scale synthesis target needs
+# (sums/products/factorials/powers of single-digit inputs), but far below
+# where bignum arithmetic itself becomes the bottleneck.
+_MAX_MAGNITUDE = 10**12
+
+
+def _check_magnitude(value):
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _MAX_MAGNITUDE:
+        raise ValueOverflow(f"value magnitude {abs(value)} exceeds {_MAX_MAGNITUDE}")
+    return value
 
 
 @dataclass(frozen=True)
@@ -230,9 +258,9 @@ def evaluate(node: Node, env: dict, fuel: Fuel):
         if isinstance(node, BinOp):
             a = evaluate(node.left, env, fuel)
             b = evaluate(node.right, env, fuel)
-            return _apply_binop(node.op, a, b)
+            return _check_magnitude(_apply_binop(node.op, a, b))
         if isinstance(node, UnaryOp):
-            return _apply_unaryop(node.op, evaluate(node.operand, env, fuel))
+            return _check_magnitude(_apply_unaryop(node.op, evaluate(node.operand, env, fuel)))
         if isinstance(node, If):
             branch = node.then if evaluate(node.cond, env, fuel) else node.orelse
             return evaluate(branch, env, fuel)

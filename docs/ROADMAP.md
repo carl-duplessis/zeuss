@@ -111,6 +111,38 @@
       generation/mutation is scope-correct and safe (tested), but the search
       is not claimed to reliably *discover* new recursive definitions.
 
+## v0.13 — dug deeper into recursion discovery: two more real bugs, still no
+- [x] Follow-up attempt at reliably *finding* recursive solutions (not just
+      safely generating them), per user request. Added `_recursive_template`
+      (a "decrement-and-combine" skeleton) mixed into generation/mutation via
+      a `template_rate`, since empirically under 5% of random depth-4 trees
+      even contain a `Letrec` with an `If`-shaped body. Two more real bugs
+      found and fixed while testing this against actual runs, not assumed:
+      1. **Unbounded value magnitude.** A generated candidate recursed with
+         an argument that *grew* (squaring) instead of shrinking toward its
+         base case - Python's arbitrary-precision integers reached numbers
+         with over 100 million bits well within the fuel budget's call-count
+         limit, making bignum arithmetic the actual runaway cost (confirmed:
+         25 squarings from 4 produces a 134-million-bit integer). Fixed with
+         a `_MAX_MAGNITUDE` bound checked after every arithmetic op in
+         `dsl.py`, raising `ValueOverflow` (caught the same way as any other
+         evaluation error) instead of hanging on bignum arithmetic.
+      2. **Pervasive performance regression.** `letrec`/`recur` were
+         unconditionally in the random-generation kind-weight pool, so *any*
+         search - including ones with no scalar/recursive target at all,
+         like list-sum-via-fold - could spawn expensive recursive candidates
+         and got measurably slower. Fixed by making recursion opt-in
+         (`allow_recursion=False` by default in `random_program`/`mutate`/
+         `synthesize`), restoring every non-recursive test to its original
+         speed while keeping the recursion-attempt path available for
+         callers who want it.
+      Honest result after all of this: `2**n` is still not reliably found
+      within a practical budget. Recursion synthesis in this codebase is a
+      genuinely tested negative result, not a limitation nobody looked at -
+      consistent with the broader GP literature, where recursive program
+      synthesis via blind mutation is known to be substantially harder than
+      iterative/functional constructs.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

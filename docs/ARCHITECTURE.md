@@ -159,26 +159,44 @@ correctness for all inputs. This is the scoped, concretely testable version
 of `ADAMAI_SPEC.md` Part 2 Tier 4's "zero-error", "provably correct" program
 synthesis language, which is not an achievable target for general programs.
 
-**Recursion synthesis: attempted, with a tested, honest result.**
+**Recursion synthesis: opt-in, tested, honest result: still no.**
 `Letrec`/`Recur` generation and mutation are scope-tracking (`search.py`
 threads a `recur_ctx` of in-scope function names/arities through generation,
 and mutation regenerates replacements using the scope actually valid at that
-tree position, not the top-level scope) and safe: no unbound-name crashes,
-and no unbounded Python-stack growth either - a real `RecursionError` was
-found empirically (a large-enough fuel budget can blow Python's own
-interpreter stack before the fuel counter runs out) and is now converted to
-the documented `FuelExhausted` inside `evaluate` itself, regardless of tree
-shape or budget. Genetic bloat (mean tree size growing unboundedly
-generation over generation, confirmed empirically - roughly 6x over 15
-generations with no correction) is controlled with parsimony pressure in
-`synthesize`'s selection step. Despite all of that, blind mutation/crossover
-does **not** reliably *discover* a correct solution for a target that
-genuinely requires recursion (`2**n`, which has no shortcut in this
-arithmetic-only grammar) within a practical budget - confirmed by running it,
-not assumed. `Letrec`/`Recur` remain fully interpreter-supported and tested
-directly on hand-built programs (factorial, etc.); the search can generate
-and safely evaluate them, but should not be described as reliably finding
-new recursive solutions from scratch.
+tree position, not the top-level scope) and safe. `allow_recursion=False` is
+the default in `random_program`/`mutate`/`synthesize` - leaving `letrec`/
+`recur` unconditionally in the generation grammar was tried and *measured* to
+make every search meaningfully slower per candidate (a recursive candidate
+costs more to evaluate than a shallow one even when perfectly safe),
+regardless of whether the target needed recursion at all. Setting
+`allow_recursion=True` re-enables them, plus `template_rate`-biased seeding
+toward a "decrement-and-combine" skeleton (`_recursive_template`) instead of
+hoping blind growth stumbles onto a working recursive shape (empirically,
+well under 5% of random depth-4 trees even contain a `Letrec` with an
+`If`-shaped body).
+
+Two further robustness issues were found and fixed by testing against real
+generated candidates, not assumed away by the existing safety net: (1) a
+real `RecursionError` (Python's own interpreter stack limit, distinct from
+the fuel counter) is now converted to the documented `FuelExhausted` inside
+`evaluate` itself, regardless of tree shape or fuel budget; (2) an unbounded
+*value magnitude* - a candidate whose recursive argument grows instead of
+shrinking (e.g. squaring) reaches numbers with millions of bits well within
+the fuel budget's call-count limit, making bignum arithmetic the actual
+runaway cost, not recursion depth - is now bounded by `_MAX_MAGNITUDE` in
+`dsl.py`, raising `ValueOverflow` instead of hanging. Genetic bloat (mean
+tree size growing unboundedly generation over generation - confirmed
+empirically, roughly 6x over 15 generations with no correction) is
+controlled with parsimony pressure in `synthesize`'s selection step.
+
+Despite all of the above, blind mutation/crossover still does **not**
+reliably *discover* a correct solution for a target that genuinely requires
+recursion (`2**n`, which has no shortcut in this arithmetic-only grammar)
+within a practical budget - confirmed by running it repeatedly after every
+fix, not assumed. `Letrec`/`Recur` remain fully interpreter-supported and
+tested directly on hand-built programs (factorial, etc.); the search can
+generate and safely evaluate them, but should not be described as reliably
+finding new recursive solutions from scratch.
 
 ## GA-HDC (experimental) - `geometric.py`
 A small Clifford algebra Cl(n,0), `n <= 6` (up to 64 blade coefficients),

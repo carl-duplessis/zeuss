@@ -13,9 +13,11 @@ from zeuss.tier4_synthesis.dsl import (
     If,
     Index,
     Length,
+    Let,
     Letrec,
     Map,
     Recur,
+    ValueOverflow,
     Var,
     count_nodes,
     evaluate,
@@ -76,6 +78,27 @@ def test_recursion_error_converts_to_fuel_exhausted_not_a_crash():
         evaluate(infinite, {}, Fuel(10_000))
 
 
+def test_unbounded_value_magnitude_raises_value_overflow_not_a_hang():
+    # A real candidate the search generated recursed by *squaring* its
+    # argument instead of shrinking it toward the base case: 25 squarings
+    # from 4 already produces a 134-million-bit integer (confirmed
+    # empirically), so the call-count fuel bound alone doesn't prevent
+    # catastrophically slow bignum arithmetic. This must raise well before
+    # fuel runs out, not hang.
+    squaring = Letrec(
+        "f",
+        ("n",),
+        If(
+            BinOp("<", Var("n"), Const(2)),
+            Const(1),
+            Let("_next", BinOp("*", Var("n"), Var("n")), Recur("f", (Var("_next"),))),
+        ),
+        Recur("f", (Const(4),)),
+    )
+    with pytest.raises(ValueOverflow):
+        evaluate(squaring, {}, Fuel(10_000))
+
+
 def test_recursion_synthesis_is_safe_but_not_reliably_found():
     """Honest finding from extending this DSL: Letrec/Recur generation and
     mutation are scope-correct and safe (no crashes, no runaway bloat - see
@@ -90,7 +113,9 @@ def test_recursion_synthesis_is_safe_but_not_reliably_found():
     """
     examples = [Example({"n": n}, 2**n) for n in range(5)]
     rng = np.random.default_rng(0)
-    best, trace, verified = synthesize(["n"], examples, population_size=200, max_generations=40, max_depth=4, rng=rng)
+    best, trace, verified = synthesize(
+        ["n"], examples, population_size=200, max_generations=40, max_depth=4, allow_recursion=True, rng=rng
+    )
     assert not verified
     assert len(trace) == 40
     assert program_energy(best, examples) > 0
@@ -101,6 +126,37 @@ def test_random_mutate_crossover_produce_valid_trees():
     inputs = ["x", "xs"]
     list_inputs = ("xs",)
     programs = [random_program(inputs, rng, max_depth=4, list_inputs=list_inputs) for _ in range(200)]
+    for p in programs:
+        assert count_nodes(p) >= 1
+        # allow_recursion defaults to False: Letrec/Recur should never appear
+        # unless explicitly requested (see test below) - opting *in* to their
+        # extra per-candidate cost, not paying it by default.
+        assert not any(isinstance(n, (Letrec, Recur)) for n in _walk(p))
+        # No unbound-variable crashes - only type errors are allowed, caught
+        # by program_energy, never a NameError from a malformed tree.
+        try:
+            evaluate(p, {"x": 3, "xs": [1, 2, 3]}, Fuel(200))
+        except NameError:
+            raise AssertionError(f"random program referenced an unbound name: {p}")
+        except Exception:
+            pass  # type errors are fine and expected for some random trees
+
+    a, b = programs[0], programs[1]
+    mutated = a
+    for _ in range(10):
+        mutated = mutate(mutated, rng, inputs, max_depth=4, list_inputs=list_inputs)
+        assert count_nodes(mutated) >= 1
+    crossed = crossover(a, b, rng)
+    assert count_nodes(crossed) >= 1
+
+
+def test_random_mutate_crossover_with_recursion_enabled_are_still_safe():
+    rng = np.random.default_rng(0)
+    inputs = ["x", "xs"]
+    list_inputs = ("xs",)
+    programs = [
+        random_program(inputs, rng, max_depth=4, list_inputs=list_inputs, allow_recursion=True) for _ in range(200)
+    ]
     saw_letrec = saw_recur = 0
     for p in programs:
         assert count_nodes(p) >= 1
@@ -119,14 +175,14 @@ def test_random_mutate_crossover_produce_valid_trees():
         except Exception:
             pass  # type errors are fine and expected for some random trees
 
-    # Letrec/Recur are live in the grammar, not just theoretically reachable.
+    # Letrec/Recur are live in the grammar when explicitly enabled.
     assert saw_letrec > 0
     assert saw_recur > 0
 
     a, b = programs[0], programs[1]
     mutated = a
     for _ in range(10):  # repeated mutation is a good stress test of scope-tracking
-        mutated = mutate(mutated, rng, inputs, max_depth=4, list_inputs=list_inputs)
+        mutated = mutate(mutated, rng, inputs, max_depth=4, list_inputs=list_inputs, allow_recursion=True)
         assert count_nodes(mutated) >= 1
     crossed = crossover(a, b, rng)
     assert count_nodes(crossed) >= 1
