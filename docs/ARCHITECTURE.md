@@ -235,15 +235,51 @@ fuel_budget=200, allow_recursion=True, resonant_bias=True` - **every one of
 9 seeds tried found a genuinely correct, held-out-generalizing `2**n`**
 (checked for n up to 9, none of which were training examples). This is a
 measured result from a single fixed configuration re-run across all 9 seeds,
-not a cherry-picked lucky one. `double_recur` is deliberately scoped to a
-*single shared step* on both recursive calls (symmetric doubling/divide-and-
-conquer, not asymmetric recursion) - Fibonacci (`f(n-1)+f(n-2)`) needs two
-independent steps and is *not* solved by this shape; that's a real, understood
-boundary (see `tests/test_synthesis.py`'s
-`test_recursion_synthesis_is_safe_but_not_reliably_found`), not a gap nobody
-looked at. `Letrec`/`Recur` remain fully interpreter-supported and tested
-directly on hand-built programs (factorial, etc.) independent of what the
-search can find.
+not a cherry-picked lucky one. `Letrec`/`Recur` remain fully
+interpreter-supported and tested directly on hand-built programs (factorial,
+etc.) independent of what the search can find.
+
+**Asymmetric recursion (`delta`): a real tradeoff, resolved with a second
+liquid-time-step, not a free lunch.** `double_recur` originally used a single
+shared step on both recursive calls (symmetric doubling only) - Fibonacci
+(`f(n-1)+f(n-2)`) needs two *different* steps and wasn't solvable by that
+shape at all. The natural fix is a `delta` hole (`f(p-step)` and
+`f(p-step-delta)`, `delta=0` recovering the symmetric case), but adding it
+uniformly (50/50) measurably slowed `2**n` discovery on some seeds (seed 4:
+0.4s -> 72.1s) - an unbiased extra binary split roughly halves the effective
+population correctly matching `delta=0`, and (as `ResonantBias`'s docstring
+already warns) `delta` must *not* be resonance-learned like the other holes,
+since a structural/family choice can converge to the wrong family from early
+noise. A *static* skewed prior (`p=[0.85, 0.15]`) was tried next and only
+partially helped: it let seed 4 eventually converge, but at ~500x the
+unbiased cost (219s / 104 generations vs. 0.4s), and skewing it further to
+fix that seed broke Fibonacci discovery outright (a seed that found it in
+3.3s started timing out) - a genuine two-sided tradeoff no single fixed ratio
+resolves.
+
+The actual fix, mirroring `collapse.anneal_adaptive`'s "adapt the step to how
+hard progress currently is" idea: `delta_p1` (the probability of drawing the
+asymmetric branch) anneals on *stagnation* - generations since `best_energy`
+last improved - staying at `delta_p1_start` (0.15) while the search is still
+making progress, growing geometrically (`delta_p1_stagnation_growth=1.08`
+per stagnant generation, capped at `delta_p1_max=0.5`) once it stalls, and
+resetting the moment progress resumes. This only makes symmetric targets pay
+the asymmetric-search cost on the runs that actually get stuck, rather than
+on every run. Measured result at the same `population_size=800,
+max_generations=150, fuel_budget=200` configuration: `2**n` still verifies on
+seeds 0, 4, and 7 (seed 4 remains the hard case at ~178s - slower than the
+pre-`delta` 0.4s, a real and documented cost of supporting asymmetric shapes
+at all, but no longer ~500x worse or seed-dependent-unsolvable). Fibonacci
+(shifted to `F(1)=F(2)=1` so the base case fits the template's fixed
+`Const(base_val)` - real Fibonacci's `F(0)=0` does not, a deliberate,
+documented scope limit) verifies and genuinely generalizes to held-out n on
+seeds 0 and 1. It is **not** reliable across seeds the way `2**n` is: seed 4
+fails to verify within this budget, and seed 7 "verifies" (matches all six
+training examples) with a degenerate, coincidental arithmetic expression
+that does *not* generalize - caught only by checking held-out points, exactly
+the failure mode this module's "verified is not proof" honesty statement
+exists for. See `tests/test_synthesis.py`'s
+`test_resonant_bias_can_discover_fibonacci` for the exact, checked claim.
 
 ## GA-HDC (experimental) - `geometric.py`
 A small Clifford algebra Cl(n,0), `n <= 6` (up to 64 blade coefficients),

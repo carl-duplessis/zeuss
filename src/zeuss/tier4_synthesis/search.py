@@ -211,24 +211,26 @@ def _grow(
 # line up with what the template actually samples.
 #
 # "combine_kind" picks between two recursive shapes:
-#   param_recur  - p OP f(p - step)                 (e.g. factorial: n * f(n-1))
-#   double_recur - f(p - step) OP f(p - step)        (e.g. 2**n: f(n-1) + f(n-1))
+#   param_recur  - p OP f(p - step)                       (e.g. factorial: n * f(n-1))
+#   double_recur - f(p - step) OP f(p - step - delta)      (e.g. 2**n with delta=0:
+#                  f(n-1) + f(n-1); Fibonacci with step=1, delta=1: f(n-1) + f(n-2))
 # The second shape was added after finding, empirically, that the actual
 # winning 2**n solution discovered via mutation (f(n-1)+f(n-1)) does *not*
 # match param_recur at all - mutation had to build it from scratch with zero
 # direct template/reinforcement support. Giving the search direct access to
 # generate *and* reinforce this shape, instead of hoping mutation stumbles
-# into it, is the fix. double_recur uses the *same* step for both calls
-# (symmetric divide-and-conquer/doubling, not asymmetric Fibonacci-style
-# recursion) - a deliberate scope cut: an independent second step multiplies
-# the combinatorial search burden for a shape that, empirically, is almost
-# always symmetric in practice, and the immediate goal (2**n) is exactly
-# symmetric.
+# into it, is the fix. "delta" (added later, for asymmetric recursion like
+# Fibonacci) is a small offset from the shared "step" rather than a fully
+# independent second step - keeps the combinatorial search burden down for
+# what's usually a small asymmetry in practice, instead of reintroducing the
+# fully-independent step2 that was tried and reverted (it roughly doubled
+# the search space for comparatively little expressive gain).
 TEMPLATE_CATEGORIES: dict[str, list] = {
     "cmp": ["==", "<=", "<"],
     "base_const": [0, 1, 2],
     "base_val": [0, 1, 2],
     "step": [1, 2],
+    "delta": [0, 1],
     "op": list(_BINOPS),
     "combine_kind": ["param_recur", "double_recur"],
 }
@@ -239,22 +241,24 @@ def _recursive_template(
     list_inputs: tuple[str, ...],
     rng: np.random.Generator,
     bias: "ResonantBias | None" = None,
+    delta_p1: float = 0.15,
 ) -> tuple[Node, dict] | tuple[None, None]:
     """A structural bias toward the two most common recursive shapes:
     ``letrec f(p) = if p CMP k then base else COMBINE in f(seed)``, where
     COMBINE is either ``p OP f(p - step)`` (param_recur) or
-    ``f(p - step) OP f(p - step)`` (double_recur - symmetric
-    divide-and-conquer/doubling shapes like ``2**n``). GP still has to tune
-    the comparison, constants, and combining operator, but starts from a
-    working high-level *shape* instead of needing mutation to discover one from
-    nothing: empirically, under 5% of random depth-4 trees even contain a
-    ``Letrec`` with an ``If``-shaped body (the bare minimum for a base case).
-    Returns ``(None, None)`` if there's no scalar input to recurse on. If
-    ``bias`` is given, hole-fillers (including which shape) are drawn from it
-    (resonance-biased toward historically successful values) instead of
-    uniformly at random. Returns ``(node, choices)`` - ``choices`` is needed
-    so the caller can later :meth:`ResonantBias.reinforce` based on how the
-    individual scores.
+    ``f(p - step) OP f(p - step - delta)`` (double_recur - symmetric when
+    ``delta=0`` like ``2**n``, asymmetric divide-and-conquer like Fibonacci
+    when ``delta != 0``). GP still has to tune the comparison, constants, and
+    combining operator, but starts from a working high-level *shape* instead
+    of needing mutation to discover one from nothing: empirically, under 5%
+    of random depth-4 trees even contain a ``Letrec`` with an ``If``-shaped
+    body (the bare minimum for a base case). Returns ``(None, None)`` if
+    there's no scalar input to recurse on. If ``bias`` is given, the
+    fine-tuning hole-fillers (not ``combine_kind``/``delta`` - see below) are
+    drawn from it (resonance-biased toward historically successful values)
+    instead of uniformly at random. Returns ``(node, choices)`` - ``choices``
+    is needed so the caller can later :meth:`ResonantBias.reinforce` based on
+    how the individual scores.
     """
     scalars = [n for n in inputs if n not in list_inputs]
     if not scalars:
@@ -262,16 +266,34 @@ def _recursive_template(
     name = f"_rec{int(rng.integers(0, 10_000))}"
     param = f"_p{int(rng.integers(0, 10_000))}"
     seed_var = str(rng.choice(scalars))
-    # combine_kind (which recursive *shape*) is deliberately drawn uniformly,
-    # never resonance-biased: reinforcing which shape to use risks premature
-    # commitment to the wrong family from early noise (found empirically -
-    # double_recur candidates fail *harder*, via fuel exhaustion on their
-    # exponential call trees, than param_recur ones fail on theirs, making
-    # param_recur look artificially better before either has had a fair
-    # chance). Keeping the family choice unbiased means both shapes always
-    # get an even shot every generation; only the fine-tuning *within*
-    # whichever shape gets drawn (cmp, constants, operator, step) is biased.
+    # combine_kind (which recursive *shape*) and delta (symmetric vs
+    # asymmetric double_recur) are deliberately drawn uniformly/from a fixed
+    # schedule, never resonance-biased: reinforcing which structural family
+    # to use risks premature commitment to the wrong one from early noise
+    # (found empirically for combine_kind - double_recur candidates fail
+    # *harder*, via fuel exhaustion on their exponential call trees, than
+    # param_recur ones fail on theirs, making param_recur look artificially
+    # better before either had a fair chance; the same risk applies to
+    # delta=0 looking artificially better than delta=1 before an asymmetric
+    # target has had a chance to prove delta=1 is actually needed).
     combine_kind = str(rng.choice(TEMPLATE_CATEGORIES["combine_kind"]))
+    # delta's prior is a fixed *schedule*, not a learned bias (so no
+    # premature-commitment risk): ``delta_p1`` is the probability of the
+    # (rarer) asymmetric choice, meant to be annealed by the caller across
+    # generations (see synthesize's docstring) - low early (symmetric
+    # recursion is the more common case, and a flat 50/50 split was measured
+    # to noticeably slow down delta=0 targets like 2**n, since an extra
+    # unbiased binary split roughly halves the effective population
+    # searching the right delta), rising later if the search hasn't
+    # converged, so an asymmetric target like Fibonacci still gets a real
+    # chance instead of the prior alone permanently disadvantaging it - the
+    # same "liquid time-step" idea as collapse.anneal_adaptive, applied to a
+    # discrete structural choice instead of a continuous beta.
+    delta = (
+        int(rng.choice(TEMPLATE_CATEGORIES["delta"], p=[1.0 - delta_p1, delta_p1]))
+        if combine_kind == "double_recur"
+        else 0
+    )
     if bias is not None:
         cmp = bias.sample("cmp", rng)
         base_const = bias.sample("base_const", rng)
@@ -285,17 +307,12 @@ def _recursive_template(
         step = int(rng.choice(TEMPLATE_CATEGORIES["step"]))
         op = str(rng.choice(TEMPLATE_CATEGORIES["op"]))
 
-    choices = {
-        "cmp": cmp,
-        "base_const": base_const,
-        "base_val": base_val,
-        "step": step,
-        "op": op,
-        "combine_kind": combine_kind,
-    }
+    choices = {"cmp": cmp, "base_const": base_const, "base_val": base_val, "step": step, "op": op, "combine_kind": combine_kind}
     if combine_kind == "double_recur":
-        recur_arg = BinOp("-", Var(param), Const(step))
-        combine = BinOp(op, Recur(name, (recur_arg,)), Recur(name, (recur_arg,)))
+        choices["delta"] = delta
+        arg_a = BinOp("-", Var(param), Const(step))
+        arg_b = arg_a if delta == 0 else BinOp("-", Var(param), Const(step + delta))
+        combine = BinOp(op, Recur(name, (arg_a,)), Recur(name, (arg_b,)))
     else:
         combine = BinOp(op, Var(param), Recur(name, (BinOp("-", Var(param), Const(step)),)))
     body = If(BinOp(cmp, Var(param), Const(base_const)), Const(base_val), combine)
@@ -345,7 +362,9 @@ def extract_template_choices(node: Node) -> dict | None:
 
     base = {"cmp": cond.op, "base_const": cond.right.value, "base_val": body.then.value, "op": combine.op}
 
-    # double_recur: f(p - step) OP f(p - step), same step on both sides
+    # double_recur: f(p - step) OP f(p - step - delta) - symmetric (delta=0)
+    # or asymmetric (delta>0), regardless of which side has the larger
+    # decrement (mutation/crossover can swap the two Recur args' order).
     if (
         isinstance(combine.left, Recur)
         and isinstance(combine.right, Recur)
@@ -355,9 +374,10 @@ def extract_template_choices(node: Node) -> dict | None:
         and len(combine.right.args) == 1
         and _is_decrement_of(combine.left.args[0], param)
         and _is_decrement_of(combine.right.args[0], param)
-        and combine.left.args[0].right.value == combine.right.args[0].right.value
     ):
-        choices = {**base, "step": combine.left.args[0].right.value, "combine_kind": "double_recur"}
+        step_a = combine.left.args[0].right.value
+        step_b = combine.right.args[0].right.value
+        choices = {**base, "step": min(step_a, step_b), "delta": abs(step_a - step_b), "combine_kind": "double_recur"}
     # param_recur: p OP f(p - step)
     elif (
         isinstance(combine.left, Var)
@@ -384,6 +404,7 @@ def random_program(
     template_rate: float = 0.15,
     allow_recursion: bool = False,
     bias: ResonantBias | None = None,
+    delta_p1: float = 0.15,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -396,10 +417,11 @@ def random_program(
     growth - see its docstring for why that matters for actually finding
     recursive solutions. ``bias`` (a :class:`ResonantBias`), if given, steers
     the template's hole-fillers toward historically successful values instead
-    of uniform random choice.
+    of uniform random choice. ``delta_p1`` is the probability of the
+    asymmetric ``double_recur`` variant (see :func:`_recursive_template`).
     """
     if allow_recursion and template_rate > 0 and rng.random() < template_rate:
-        template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias)
+        template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias, delta_p1)
         if template is not None:
             return template
     return _grow(list(inputs), tuple(list_inputs), (), rng, max_depth, allow_recursion)
@@ -451,6 +473,7 @@ def _replace_at_scoped(
     template_rate: float = 0.15,
     allow_recursion: bool = False,
     bias: ResonantBias | None = None,
+    delta_p1: float = 0.15,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
@@ -462,13 +485,18 @@ def _replace_at_scoped(
     counter[0] += 1
     if idx == target_index:
         if allow_recursion and template_rate > 0 and rng.random() < template_rate:
-            template, _choices = _recursive_template(inputs, list_inputs, rng, bias)
+            template, _choices = _recursive_template(inputs, list_inputs, rng, bias, delta_p1)
             if template is not None:
                 return template
         return _grow(inputs, list_inputs, recur_ctx, rng, max(1, max_depth - 1), allow_recursion)
 
     scalars = [n for n in inputs if n not in list_inputs]
-    kwargs = {"template_rate": template_rate, "allow_recursion": allow_recursion, "bias": bias}
+    kwargs = {
+        "template_rate": template_rate,
+        "allow_recursion": allow_recursion,
+        "bias": bias,
+        "delta_p1": delta_p1,
+    }
 
     if isinstance(node, Let):
         new_value = _replace_at_scoped(
@@ -544,6 +572,7 @@ def mutate(
     template_rate: float = 0.15,
     allow_recursion: bool = False,
     bias: ResonantBias | None = None,
+    delta_p1: float = 0.15,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring)."""
@@ -561,6 +590,7 @@ def mutate(
         template_rate=template_rate,
         allow_recursion=allow_recursion,
         bias=bias,
+        delta_p1=delta_p1,
     )
 
 
@@ -641,6 +671,9 @@ def synthesize(
     template_rate: float = 0.15,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
+    delta_p1_start: float = 0.15,
+    delta_p1_max: float = 0.5,
+    delta_p1_stagnation_growth: float = 1.08,
     rng: np.random.Generator | None = None,
 ):
     """Search for a program satisfying ``examples`` via mutation/crossover,
@@ -682,6 +715,32 @@ def synthesize(
     generations' template draws lean toward hole-fillers that have actually
     correlated with lower energy in *this run*, not a fixed prior.
 
+    ``delta_p1_*`` control a second, independent liquid-time-step: the
+    probability that a freshly-generated ``double_recur`` template is
+    asymmetric (see :func:`_recursive_template`'s ``delta_p1`` parameter).
+    Unlike the hole-filler bias above, this is deliberately *not* learned via
+    :class:`ResonantBias` - a structural/family choice like this risks
+    premature convergence to the wrong family from early noise (see that
+    class's docstring). Instead it anneals on a fixed schedule keyed to
+    *stagnation* (generations since ``best_energy`` last improved), the same
+    "adapt the step to how hard progress currently is" idea as
+    :func:`zeuss.tier2_substrate.collapse.anneal_adaptive`: while the search
+    is still improving, ``delta_p1`` stays at ``delta_p1_start`` (low, since
+    symmetric recursion is the common case and an unbiased 50/50 split was
+    measured to slow down symmetric targets like ``2**n``); once a run stalls
+    (no improvement for several generations - the sign a purely-symmetric
+    search is exhausted, or a symmetric prior is actively fighting an
+    asymmetric target like Fibonacci), it grows geometrically by
+    ``delta_p1_stagnation_growth`` per stagnant generation, capped at
+    ``delta_p1_max``, and resets to ``delta_p1_start`` the moment progress
+    resumes. This was measured to fix a real, previously-hidden failure mode:
+    a *static* skew (e.g. 85/15) was tried first and only partially helped -
+    it let one bad seed for ``2**n`` eventually converge but at ~500x the
+    unbiased cost (219s / 104 generations vs. 0.4s), while a large enough
+    static skew to fix that seed broke Fibonacci discovery outright. The
+    stagnation-triggered schedule instead only pays the asymmetric-search
+    cost on runs that actually need it.
+
     Returns ``(best_node, beta_trace, verified)``. ``verified`` re-runs
     :func:`program_energy` on the winner one more time, post-hoc - never
     trust the search's own bookkeeping without re-checking.
@@ -692,8 +751,10 @@ def synthesize(
         bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
         bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
 
+    delta_p1 = delta_p1_start
+    stagnation = 0
     population = [
-        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias)
+        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1)
         for _ in range(population_size)
     ]
 
@@ -705,9 +766,13 @@ def synthesize(
     for _generation in range(max_generations):
         raw_energies = np.array([program_energy(p, examples, fuel_budget) for p in population])
         idx_best = int(np.argmin(raw_energies))
-        if raw_energies[idx_best] < best_energy:
+        if raw_energies[idx_best] < best_energy - 1e-9:
             best_energy = float(raw_energies[idx_best])
             best_node = population[idx_best]
+            stagnation = 0
+        else:
+            stagnation += 1
+        delta_p1 = min(delta_p1_max, delta_p1_start * (delta_p1_stagnation_growth**stagnation))
         beta_trace.append(beta)
         if best_energy <= 1e-9:
             break
@@ -728,7 +793,8 @@ def synthesize(
                 child = crossover(population[i], population[j], rng)
             else:
                 child = mutate(
-                    population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias
+                    population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
+                    delta_p1,
                 )
             next_population.append(child)
         population = next_population

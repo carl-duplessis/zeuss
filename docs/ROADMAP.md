@@ -211,6 +211,59 @@
       tried in v0.14's comparison. `zeuss synth` CLI Scenario 3 updated to
       this configuration.
 
+## v0.16 — asymmetric recursion (Fibonacci): a second liquid time-step
+- [x] Per user request ("should we cover asymmetric recursion?" -> "yes, go
+      ahead"): reintroduced `double_recur`'s dropped second step as `delta`
+      (`f(p-step)` and `f(p-step-delta)`, `delta=0` recovering v0.15's
+      symmetric shape) so asymmetric shapes like Fibonacci are expressible.
+      Confirmed by hand-calculating `T(n) = T(n-1) + T(n-2) + 1` before
+      touching code (`T(8) = 41`, cheaper than `2**n`'s `T(4) = 31`) that a
+      shifted-indexing Fibonacci (`F(1)=F(2)=1`, since the template's base
+      case is always a fixed `Const(base_val)`, not `Var(param)` - real
+      Fibonacci's `F(0)=0` doesn't fit and is out of scope here) has a safe
+      fuel cost. `extract_template_choices` generalized to recognize both
+      symmetric and asymmetric shapes regardless of argument order
+      (0 mismatches over 500 round-trip draws).
+- [x] Diagnosed a real, two-sided tradeoff rather than picking one number and
+      moving on: adding `delta` at a uniform 50/50 slowed `2**n` on some
+      seeds (seed 4: 0.4s -> 72.1s - an unbiased extra binary split roughly
+      halves the effective population matching the still-correct `delta=0`
+      case). A static skewed prior (`p=[0.85, 0.15]`) only partially fixed
+      it: seed 4 eventually converged, but at ~500x the unbiased cost (219s /
+      104 generations), and skewing further to fix that seed broke Fibonacci
+      discovery outright (a 3.3s seed started timing out at 60s). `delta` is
+      deliberately *not* routed through `ResonantBias` - a structural/family
+      choice risks premature convergence to the wrong family from early
+      noise, same reasoning as `combine_kind` in v0.15.
+- [x] Fix: `delta_p1` (probability of drawing the asymmetric branch) anneals
+      on *stagnation* (generations since `best_energy` last improved) rather
+      than a fixed ratio - the same "adapt the step to how hard progress
+      currently is" idea as `collapse.anneal_adaptive`, applied to a discrete
+      structural choice instead of a continuous beta. Stays at
+      `delta_p1_start=0.15` while progress continues, grows geometrically
+      (`delta_p1_stagnation_growth=1.08` per stagnant generation, capped at
+      `delta_p1_max=0.5`) once stuck, resets on the next improvement - so a
+      run only pays the asymmetric-search cost when it actually needs to.
+      Threaded through `random_program`/`mutate`/`_replace_at_scoped`/
+      `synthesize`.
+- [x] Result, measured at the same configuration as v0.15
+      (`population_size=800, max_generations=150, fuel_budget=200,
+      allow_recursion=True, resonant_bias=True`): `2**n` still verifies on
+      seeds 0, 4, 7 (seed 4 now ~178s - slower than the pre-`delta` 0.4s, a
+      real and documented cost of supporting asymmetric shapes at all, but no
+      longer ~500x worse or unsolvable). Fibonacci verifies and genuinely
+      generalizes to held-out n on seeds 0 and 1. **Not** reliable the way
+      `2**n` is: seed 4 fails to verify within this budget, and seed 7
+      "verifies" against all six training examples with a degenerate,
+      coincidental expression that does *not* generalize to held-out n -
+      caught only by checking held-out points, a real demonstration of why
+      "verified" never means "proven correct" in this module. Shipped as:
+      `test_resonant_bias_can_discover_fibonacci` (the checked positive
+      claim, seed 1) plus an updated docstring on
+      `test_recursion_synthesis_is_safe_but_not_reliably_found` (no longer
+      claims the asymmetric shape is missing from the grammar - it's a
+      budget/reliability boundary now, not a grammar one).
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

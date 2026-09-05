@@ -109,18 +109,20 @@ def test_unbounded_value_magnitude_raises_value_overflow_not_a_hang():
 
 
 def test_recursion_synthesis_is_safe_but_not_reliably_found():
-    """Honest finding, still true after the double_recur shape and resonance
-    bias made ``2**n`` reliably findable (see the tests below): the search
+    """Honest finding, still true even after ``double_recur`` grew an
+    asymmetric ``delta`` (see ``_recursive_template`` and the Fibonacci tests
+    below, which *do* find asymmetric solutions on some seeds): the search
     remains scope-correct and safe (no crashes, no runaway bloat, no bignum
-    hangs - see search.py's module docstring) but is *not* a general
-    recursion solver. Fibonacci (``f(n) = f(n-1) + f(n-2)``) genuinely needs
-    *asymmetric* double recursion, which ``double_recur`` deliberately
-    doesn't support (scoped to a single shared step - see
-    ``_recursive_template``'s docstring: an independent second step doubles
-    the combinatorial search burden for a shape that's usually symmetric in
-    practice). This isn't a budget problem to throw more generations at - the
-    shape literally isn't in the grammar - so it pins down a real,
-    understood boundary rather than an arbitrary "small budget" cop-out.
+    hangs - see search.py's module docstring) but is *not* a reliable general
+    recursion solver. At this test's deliberately small budget (population
+    200, generations 40, default fuel_budget=60 - too small for
+    ``double_recur``'s exponential call trees to pay off even for a correct
+    asymmetric candidate), Fibonacci (``f(n) = f(n-1) + f(n-2)``) is not
+    found. This is a budget/reliability boundary, not a grammar boundary -
+    see ``test_resonant_bias_can_discover_fibonacci`` for a budget at which
+    it sometimes succeeds, and its docstring for the honest reliability
+    picture across seeds (including a seed that "verifies" against the
+    training examples without actually generalizing).
     """
     examples = [Example({"n": n}, f) for n, f in enumerate([0, 1, 1, 2, 3, 5, 8])]
     rng = np.random.default_rng(0)
@@ -199,6 +201,50 @@ def test_resonant_bias_discovers_recursion_reliably_across_seeds():
         assert verified, f"seed {seed} failed to find 2**n"
         for n, expected in [(6, 64), (7, 128), (8, 256)]:
             assert evaluate(best, {"n": n}, Fuel(2000)) == expected, f"seed {seed} found a non-generalizing solution"
+
+
+def test_resonant_bias_can_discover_fibonacci():
+    """Asymmetric recursion, positive result: Fibonacci (shifted to
+    ``F(1)=F(2)=1`` so the base case is expressible as the template's fixed
+    ``Const(base_val)``, not ``Var(param)`` - see ``_recursive_template``'s
+    docstring) needs ``double_recur`` with an *asymmetric* ``delta`` (two
+    different recursive calls, ``f(p-step)`` and ``f(p-step-delta)``), unlike
+    ``2**n``'s symmetric ``delta=0`` shape. ``delta``'s prior is deliberately
+    *not* resonance-biased (see :class:`ResonantBias`'s and ``synthesize``'s
+    docstrings for why a structural choice risks premature convergence) -
+    instead it anneals on a stagnation-triggered schedule
+    (``delta_p1_start``/``delta_p1_max``/``delta_p1_stagnation_growth``) so a
+    run only pays the extra asymmetric-search cost once it's actually stuck.
+
+    Honest reliability picture, measured across seeds at this same
+    configuration: seeds 0 and 1 both find a genuinely correct,
+    held-out-generalizing Fibonacci (this test re-checks seed 1, the faster
+    of the two, to keep the suite's runtime reasonable). Seed 4 does not
+    verify within this budget. Seed 7 does "verify" (all six training
+    examples match) but with a degenerate, coincidental expression that does
+    *not* generalize to held-out n - a real, useful reminder that
+    ``verified`` means "matched the given examples," never "proven correct,"
+    exactly as this module's honesty statement already says (see
+    ``synth.py``). This test only asserts the genuine-generalization case;
+    it does not claim Fibonacci is as reliably found as ``2**n`` is.
+    """
+    fib = [0, 1, 1, 2, 3, 5, 8]
+    examples = [Example({"n": n}, f) for n, f in enumerate(fib)]
+    rng = np.random.default_rng(1)
+    best, _trace, verified = synthesize(
+        ["n"],
+        examples,
+        population_size=800,
+        max_generations=150,
+        max_depth=4,
+        allow_recursion=True,
+        resonant_bias=True,
+        fuel_budget=200,
+        rng=rng,
+    )
+    assert verified
+    for n, expected in [(7, 13), (8, 21), (9, 34)]:
+        assert evaluate(best, {"n": n}, Fuel(2000)) == expected
 
 
 def test_random_mutate_crossover_produce_valid_trees():
