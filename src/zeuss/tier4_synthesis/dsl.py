@@ -206,69 +206,83 @@ def _apply_unaryop(op: str, v):
 def evaluate(node: Node, env: dict, fuel: Fuel):
     """Evaluate ``node`` under ``env``, spending ``fuel`` on every recursive
     call and fold iteration. Raises :class:`FuelExhausted` rather than
-    looping forever or timing out."""
-    if isinstance(node, Const):
-        return node.value
-    if isinstance(node, Var):
-        if node.name not in env:
-            raise NameError(f"unbound variable: {node.name}")
-        return env[node.name]
-    if isinstance(node, ListLit):
-        return [evaluate(item, env, fuel) for item in node.items]
-    if isinstance(node, BinOp):
-        a = evaluate(node.left, env, fuel)
-        b = evaluate(node.right, env, fuel)
-        return _apply_binop(node.op, a, b)
-    if isinstance(node, UnaryOp):
-        return _apply_unaryop(node.op, evaluate(node.operand, env, fuel))
-    if isinstance(node, If):
-        branch = node.then if evaluate(node.cond, env, fuel) else node.orelse
-        return evaluate(branch, env, fuel)
-    if isinstance(node, Let):
-        value = evaluate(node.value, env, fuel)
-        return evaluate(node.body, {**env, node.name: value}, fuel)
-    if isinstance(node, Fold):
-        items = evaluate(node.list_expr, env, fuel)
-        acc = evaluate(node.init, env, fuel)
-        for item in items:
+    looping forever or timing out.
+
+    ``fuel`` bounds the *logical* recursion count, but each DSL-level
+    ``Recur`` call costs several Python stack frames (evaluating the call,
+    its arguments, the branch it lands in, ...), so a large-enough fuel
+    budget can let Python's own interpreter stack run out *before* the fuel
+    counter does, raising ``RecursionError`` instead of ``FuelExhausted`` -
+    confirmed empirically while extending this DSL. That would break the
+    "never an uncaught crash, always FuelExhausted" contract, so the whole
+    dispatch is wrapped to convert any ``RecursionError`` into
+    ``FuelExhausted`` regardless of tree shape or fuel budget size.
+    """
+    try:
+        if isinstance(node, Const):
+            return node.value
+        if isinstance(node, Var):
+            if node.name not in env:
+                raise NameError(f"unbound variable: {node.name}")
+            return env[node.name]
+        if isinstance(node, ListLit):
+            return [evaluate(item, env, fuel) for item in node.items]
+        if isinstance(node, BinOp):
+            a = evaluate(node.left, env, fuel)
+            b = evaluate(node.right, env, fuel)
+            return _apply_binop(node.op, a, b)
+        if isinstance(node, UnaryOp):
+            return _apply_unaryop(node.op, evaluate(node.operand, env, fuel))
+        if isinstance(node, If):
+            branch = node.then if evaluate(node.cond, env, fuel) else node.orelse
+            return evaluate(branch, env, fuel)
+        if isinstance(node, Let):
+            value = evaluate(node.value, env, fuel)
+            return evaluate(node.body, {**env, node.name: value}, fuel)
+        if isinstance(node, Fold):
+            items = evaluate(node.list_expr, env, fuel)
+            acc = evaluate(node.init, env, fuel)
+            for item in items:
+                fuel.spend()
+                acc = evaluate(node.body, {**env, node.var_acc: acc, node.var_item: item}, fuel)
+            return acc
+        if isinstance(node, Length):
+            return len(evaluate(node.list_expr, env, fuel))
+        if isinstance(node, Index):
+            items = evaluate(node.list_expr, env, fuel)
+            idx = evaluate(node.index_expr, env, fuel)
+            return items[idx]
+        if isinstance(node, Map):
+            items = evaluate(node.list_expr, env, fuel)
+            result = []
+            for item in items:
+                fuel.spend()
+                result.append(evaluate(node.body, {**env, node.var_item: item}, fuel))
+            return result
+        if isinstance(node, Filter):
+            items = evaluate(node.list_expr, env, fuel)
+            result = []
+            for item in items:
+                fuel.spend()
+                if evaluate(node.predicate, {**env, node.var_item: item}, fuel):
+                    result.append(item)
+            return result
+        if isinstance(node, Letrec):
+            new_env = dict(env)
+            new_env[node.name] = Closure(node.params, node.body)
+            return evaluate(node.in_expr, new_env, fuel)
+        if isinstance(node, Recur):
             fuel.spend()
-            acc = evaluate(node.body, {**env, node.var_acc: acc, node.var_item: item}, fuel)
-        return acc
-    if isinstance(node, Length):
-        return len(evaluate(node.list_expr, env, fuel))
-    if isinstance(node, Index):
-        items = evaluate(node.list_expr, env, fuel)
-        idx = evaluate(node.index_expr, env, fuel)
-        return items[idx]
-    if isinstance(node, Map):
-        items = evaluate(node.list_expr, env, fuel)
-        result = []
-        for item in items:
-            fuel.spend()
-            result.append(evaluate(node.body, {**env, node.var_item: item}, fuel))
-        return result
-    if isinstance(node, Filter):
-        items = evaluate(node.list_expr, env, fuel)
-        result = []
-        for item in items:
-            fuel.spend()
-            if evaluate(node.predicate, {**env, node.var_item: item}, fuel):
-                result.append(item)
-        return result
-    if isinstance(node, Letrec):
-        new_env = dict(env)
-        new_env[node.name] = Closure(node.params, node.body)
-        return evaluate(node.in_expr, new_env, fuel)
-    if isinstance(node, Recur):
-        fuel.spend()
-        closure = env.get(node.name)
-        if not isinstance(closure, Closure):
-            raise NameError(f"{node.name} is not a recursive function in scope")
-        args = [evaluate(a, env, fuel) for a in node.args]
-        call_env = dict(env)
-        call_env.update(zip(closure.params, args))
-        return evaluate(closure.body, call_env, fuel)
-    raise TypeError(f"unknown node type: {type(node)!r}")
+            closure = env.get(node.name)
+            if not isinstance(closure, Closure):
+                raise NameError(f"{node.name} is not a recursive function in scope")
+            args = [evaluate(a, env, fuel) for a in node.args]
+            call_env = dict(env)
+            call_env.update(zip(closure.params, args))
+            return evaluate(closure.body, call_env, fuel)
+        raise TypeError(f"unknown node type: {type(node)!r}")
+    except RecursionError:
+        raise FuelExhausted() from None
 
 
 def children(node: Node) -> list["Node"]:

@@ -155,12 +155,30 @@ entry point.
 
 **Honesty statement:** "verified" means the winning candidate is re-checked
 against every given (and, in tests, held-out) example - not a formal proof of
-correctness for all inputs. The mutation/crossover search only targets the
-searchable DSL subset (no auto-generated recursion - see `dsl.py`'s honesty
-note); `Letrec`/`Recur` is fully interpreter-supported and tested directly on
-hand-built programs. This is the scoped, concretely testable version of
-`ADAMAI_SPEC.md` Part 2 Tier 4's "zero-error", "provably correct" program
+correctness for all inputs. This is the scoped, concretely testable version
+of `ADAMAI_SPEC.md` Part 2 Tier 4's "zero-error", "provably correct" program
 synthesis language, which is not an achievable target for general programs.
+
+**Recursion synthesis: attempted, with a tested, honest result.**
+`Letrec`/`Recur` generation and mutation are scope-tracking (`search.py`
+threads a `recur_ctx` of in-scope function names/arities through generation,
+and mutation regenerates replacements using the scope actually valid at that
+tree position, not the top-level scope) and safe: no unbound-name crashes,
+and no unbounded Python-stack growth either - a real `RecursionError` was
+found empirically (a large-enough fuel budget can blow Python's own
+interpreter stack before the fuel counter runs out) and is now converted to
+the documented `FuelExhausted` inside `evaluate` itself, regardless of tree
+shape or budget. Genetic bloat (mean tree size growing unboundedly
+generation over generation, confirmed empirically - roughly 6x over 15
+generations with no correction) is controlled with parsimony pressure in
+`synthesize`'s selection step. Despite all of that, blind mutation/crossover
+does **not** reliably *discover* a correct solution for a target that
+genuinely requires recursion (`2**n`, which has no shortcut in this
+arithmetic-only grammar) within a practical budget - confirmed by running it,
+not assumed. `Letrec`/`Recur` remain fully interpreter-supported and tested
+directly on hand-built programs (factorial, etc.); the search can generate
+and safely evaluate them, but should not be described as reliably finding
+new recursive solutions from scratch.
 
 ## GA-HDC (experimental) - `geometric.py`
 A small Clifford algebra Cl(n,0), `n <= 6` (up to 64 blade coefficients),

@@ -88,6 +88,29 @@
       mismatch scoring inside the same `try`. `zeuss synth` CLI demo now
       shows both a `Fold` and a `Filter` target.
 
+## v0.12 — recursion synthesis attempt (honest result: safe, not reliable)
+- [x] `tier4_synthesis/search.py`: made `Letrec`/`Recur` generation and
+      mutation scope-aware (`recur_ctx` threaded through `_grow`; mutation
+      uses a scope-tracking traversal, `_replace_at_scoped`, instead of the
+      scope-blind one used for crossover). Two real bugs found and fixed
+      while testing this against actual runs:
+      1. A large-enough fuel budget let Python's own interpreter stack
+         overflow *before* the fuel counter did, raising `RecursionError`
+         instead of the documented `FuelExhausted` - `evaluate()` now
+         converts any `RecursionError` into `FuelExhausted` itself,
+         regardless of tree shape or budget.
+      2. Genetic bloat: with no size pressure, mean population tree size grew
+         ~6x over 15 generations (confirmed by direct measurement), making
+         full-budget runs take 100+ seconds. Fixed with parsimony pressure
+         (a small size penalty added only to the reproduction-selection
+         score, not to the true "verified" energy) in `synthesize`.
+      Despite both fixes, blind mutation/crossover does **not** reliably find
+      a correct solution for a target that genuinely requires recursion
+      (`2**n`, no shortcut in this arithmetic grammar) within a practical
+      budget - confirmed empirically, not assumed. Shipped as: recursion
+      generation/mutation is scope-correct and safe (tested), but the search
+      is not claimed to reliably *discover* new recursive definitions.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
