@@ -264,6 +264,35 @@
       claims the asymmetric shape is missing from the grammar - it's a
       budget/reliability boundary now, not a grammar one).
 
+## v0.17 — zero-indexed Fibonacci, and an honest non-fix
+- [x] Two good-first-tasks from v0.16's writeup, tackled together. First:
+      `_recursive_template`'s base case was always `Const(base_val)` - a
+      fixed number, so real Fibonacci (`F(0)=0`) wasn't expressible, only the
+      reindexed `F(1)=F(2)=1` workaround was. Added `base_kind` (`"const"` /
+      `"param"`, the latter using `Var(param)` itself as the base case) as a
+      third structural hole, uniformly drawn and never resonance-biased
+      (same reasoning as `combine_kind`/`delta`). Verified: 2000 round-trip
+      draws with 0 mismatches, a hand-built `if p<=1 then p else
+      f(p-1)+f(p-2)` evaluates correctly and extracts to the expected
+      hole-fillers, and re-checking `2**n` on seeds 0/4/7 confirmed the extra
+      structural coin flip doesn't regress its reliability (all three still
+      verify and generalize). Result: real zero-indexed Fibonacci is
+      genuinely discoverable and held-out-generalizing (`test_resonant_bias_
+      can_discover_zero_indexed_fibonacci`).
+- [x] Second: tried to close the `delta_p1`-schedule gap so Fibonacci is as
+      reliable as `2**n` (seeds 4/7 from v0.16). Found this does **not** have
+      a clean fix - recorded honestly rather than papered over. Adding one
+      more training example (8 instead of 7, shifted-indexing target) *did*
+      fix both seed 4 (not-verified -> verified-and-generalizing) and seed 7
+      (stopped overfitting), but broke seed 1, which had generalized fine on
+      the original 7 examples. A genuine whack-a-mole across seeds, not a
+      fixable-with-more-data problem the way `list_sum`'s overfitting was.
+      Left open as a good-first-task with this finding attached, rather than
+      closed on a claim the evidence doesn't support.
+- [x] `zeuss synth` CLI Scenario 4 switched to the real zero-indexed target
+      (was the reindexed workaround); docs (`docs/ARCHITECTURE.md`,
+      `CLAUDE.md`'s good-first-tasks) updated to match.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

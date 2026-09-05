@@ -210,11 +210,12 @@ def _synth() -> int:
         "budget during development - see docs/ROADMAP.md for the honest history.)"
     )
 
-    print("\nScenario 4: f(n) = fibonacci(n), from 7 I/O examples (asymmetric recursion -")
-    print("needs f(n-1) AND f(n-2), not just one recursive call; shifted so F(1)=F(2)=1)")
+    print("\nScenario 4: f(n) = fibonacci(n), true zero-indexed F(0)=0/F(1)=1, from 7 I/O")
+    print("examples (asymmetric recursion - needs f(n-1) AND f(n-2), base case is the")
+    print("parameter itself (base_kind='param'), not a fixed constant)")
     fib = [0, 1, 1, 2, 3, 5, 8]
     fib_examples = [Example({"n": n}, f) for n, f in enumerate(fib)]
-    rng4 = np.random.default_rng(1)
+    rng4 = np.random.default_rng(0)
     best4, beta_trace4, verified4 = synthesize(
         ["n"], fib_examples, population_size=800, max_generations=150, max_depth=4,
         allow_recursion=True, resonant_bias=True, fuel_budget=200, rng=rng4,
@@ -226,10 +227,11 @@ def _synth() -> int:
         result = evaluate(best4, {"n": n}, Fuel(2000))
         print(f"  fibonacci({n}) -> {result}  (expected {expected})  {'OK' if result == expected else 'MISMATCH'}")
     print(
-        "(Asymmetric recursion is NOT reliable the way 2**n is: at this budget one "
-        "seed fails to verify and another 'verifies' against training examples with "
-        "a degenerate expression that doesn't generalize - see docs/ROADMAP.md v0.16 "
-        "for the honest measured picture across seeds.)"
+        "(Asymmetric recursion is NOT reliable the way 2**n is: some seeds fail to "
+        "verify, and one otherwise-good seed 'verifies' against training examples "
+        "with a degenerate expression that doesn't generalize. Adding more training "
+        "examples fixes some seeds but breaks others - a genuine whack-a-mole, not a "
+        "fixable-with-more-data problem - see docs/ROADMAP.md v0.16/v0.17.)"
     )
 
     print(

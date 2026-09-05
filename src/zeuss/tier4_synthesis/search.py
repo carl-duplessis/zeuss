@@ -229,6 +229,7 @@ TEMPLATE_CATEGORIES: dict[str, list] = {
     "cmp": ["==", "<=", "<"],
     "base_const": [0, 1, 2],
     "base_val": [0, 1, 2],
+    "base_kind": ["const", "param"],
     "step": [1, 2],
     "delta": [0, 1],
     "op": list(_BINOPS),
@@ -248,17 +249,23 @@ def _recursive_template(
     COMBINE is either ``p OP f(p - step)`` (param_recur) or
     ``f(p - step) OP f(p - step - delta)`` (double_recur - symmetric when
     ``delta=0`` like ``2**n``, asymmetric divide-and-conquer like Fibonacci
-    when ``delta != 0``). GP still has to tune the comparison, constants, and
-    combining operator, but starts from a working high-level *shape* instead
-    of needing mutation to discover one from nothing: empirically, under 5%
-    of random depth-4 trees even contain a ``Letrec`` with an ``If``-shaped
-    body (the bare minimum for a base case). Returns ``(None, None)`` if
-    there's no scalar input to recurse on. If ``bias`` is given, the
-    fine-tuning hole-fillers (not ``combine_kind``/``delta`` - see below) are
-    drawn from it (resonance-biased toward historically successful values)
-    instead of uniformly at random. Returns ``(node, choices)`` - ``choices``
-    is needed so the caller can later :meth:`ResonantBias.reinforce` based on
-    how the individual scores.
+    when ``delta != 0``), and ``base`` is either ``Const(base_val)``
+    (``base_kind="const"``) or ``Var(param)`` itself (``base_kind="param"``).
+    The latter is what makes a *true* zero-indexed Fibonacci
+    (``F(0)=0, F(1)=1``, i.e. ``if p<=1 then p else f(p-1)+f(p-2)``)
+    expressible - with only ``Const`` base cases, the base value is a fixed
+    number, which cannot equal the varying parameter. GP still has to tune
+    the comparison, constants, and combining operator, but starts from a
+    working high-level *shape* instead of needing mutation to discover one
+    from nothing: empirically, under 5% of random depth-4 trees even contain
+    a ``Letrec`` with an ``If``-shaped body (the bare minimum for a base
+    case). Returns ``(None, None)`` if there's no scalar input to recurse on.
+    If ``bias`` is given, the fine-tuning hole-fillers (not
+    ``combine_kind``/``delta``/``base_kind`` - see below) are drawn from it
+    (resonance-biased toward historically successful values) instead of
+    uniformly at random. Returns ``(node, choices)`` - ``choices`` is needed
+    so the caller can later :meth:`ResonantBias.reinforce` based on how the
+    individual scores.
     """
     scalars = [n for n in inputs if n not in list_inputs]
     if not scalars:
@@ -276,6 +283,13 @@ def _recursive_template(
     # better before either had a fair chance; the same risk applies to
     # delta=0 looking artificially better than delta=1 before an asymmetric
     # target has had a chance to prove delta=1 is actually needed).
+    # base_kind is drawn the same way as combine_kind: uniformly, never
+    # resonance-biased. It's a structural choice (does the base case depend
+    # on the parameter at all?) of the same kind combine_kind/delta already
+    # are, and the project's established caution is to keep structural/family
+    # choices out of the learned bias so a locally-confident-but-wrong family
+    # can't lock in from early noise - see the comment on combine_kind below.
+    base_kind = str(rng.choice(TEMPLATE_CATEGORIES["base_kind"]))
     combine_kind = str(rng.choice(TEMPLATE_CATEGORIES["combine_kind"]))
     # delta's prior is a fixed *schedule*, not a learned bias (so no
     # premature-commitment risk): ``delta_p1`` is the probability of the
@@ -307,7 +321,12 @@ def _recursive_template(
         step = int(rng.choice(TEMPLATE_CATEGORIES["step"]))
         op = str(rng.choice(TEMPLATE_CATEGORIES["op"]))
 
-    choices = {"cmp": cmp, "base_const": base_const, "base_val": base_val, "step": step, "op": op, "combine_kind": combine_kind}
+    choices = {"cmp": cmp, "base_const": base_const, "step": step, "op": op, "combine_kind": combine_kind, "base_kind": base_kind}
+    if base_kind == "param":
+        then_node: Node = Var(param)
+    else:
+        choices["base_val"] = base_val
+        then_node = Const(base_val)
     if combine_kind == "double_recur":
         choices["delta"] = delta
         arg_a = BinOp("-", Var(param), Const(step))
@@ -315,7 +334,7 @@ def _recursive_template(
         combine = BinOp(op, Recur(name, (arg_a,)), Recur(name, (arg_b,)))
     else:
         combine = BinOp(op, Var(param), Recur(name, (BinOp("-", Var(param), Const(step)),)))
-    body = If(BinOp(cmp, Var(param), Const(base_const)), Const(base_val), combine)
+    body = If(BinOp(cmp, Var(param), Const(base_const)), then_node, combine)
     node = Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
     return node, choices
 
@@ -354,13 +373,20 @@ def extract_template_choices(node: Node) -> dict | None:
         and isinstance(cond.right, Const)
     ):
         return None
-    if not isinstance(body.then, Const):
+    # base case: either Const(base_val) (base_kind="const") or the bare
+    # parameter itself (base_kind="param" - what makes a true zero-indexed
+    # Fibonacci expressible, see _recursive_template's docstring).
+    if isinstance(body.then, Const):
+        base_kind_fields: dict = {"base_kind": "const", "base_val": body.then.value}
+    elif isinstance(body.then, Var) and body.then.name == param:
+        base_kind_fields = {"base_kind": "param"}
+    else:
         return None
     combine = body.orelse
     if not isinstance(combine, BinOp):
         return None
 
-    base = {"cmp": cond.op, "base_const": cond.right.value, "base_val": body.then.value, "op": combine.op}
+    base = {"cmp": cond.op, "base_const": cond.right.value, "op": combine.op, **base_kind_fields}
 
     # double_recur: f(p - step) OP f(p - step - delta) - symmetric (delta=0)
     # or asymmetric (delta>0), regardless of which side has the larger

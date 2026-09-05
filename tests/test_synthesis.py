@@ -142,6 +142,38 @@ def test_extract_template_choices_round_trips_and_rejects_non_templates():
     assert extract_template_choices(Var("n")) is None
 
 
+def test_extract_template_choices_handles_param_base_case():
+    """``base_kind="param"`` (``Var(param)`` as the base case, instead of a
+    fixed ``Const``) is what makes a *true* zero-indexed Fibonacci (``F(0)=0``)
+    expressible - see ``_recursive_template``'s docstring. Hand-built here
+    (rather than relying on a random draw to hit this branch) so the
+    extraction round-trip for it is pinned down directly."""
+    fib0 = Letrec(
+        "fib",
+        ("p",),
+        If(
+            BinOp("<=", Var("p"), Const(1)),
+            Var("p"),
+            BinOp(
+                "+",
+                Recur("fib", (BinOp("-", Var("p"), Const(1)),)),
+                Recur("fib", (BinOp("-", Var("p"), Const(2)),)),
+            ),
+        ),
+        Recur("fib", (Var("n"),)),
+    )
+    assert evaluate(fib0, {"n": 8}, Fuel(500)) == 21
+    assert extract_template_choices(fib0) == {
+        "cmp": "<=",
+        "base_const": 1,
+        "op": "+",
+        "base_kind": "param",
+        "step": 1,
+        "delta": 1,
+        "combine_kind": "double_recur",
+    }
+
+
 def test_resonant_bias_can_discover_genuine_recursion():
     """The positive result: resonance-guided template seeding
     (ResonantBias - an Estimation-of-Distribution prior over the template's
@@ -227,10 +259,46 @@ def test_resonant_bias_can_discover_fibonacci():
     exactly as this module's honesty statement already says (see
     ``synth.py``). This test only asserts the genuine-generalization case;
     it does not claim Fibonacci is as reliably found as ``2**n`` is.
+
+    A follow-up was tried to fix seeds 4 and 7 specifically: adding one more
+    training example (``n=7``, 8 examples total instead of 7). That *did* fix
+    both - seed 4 verified and generalized, seed 7 stopped overfitting - but
+    it broke seed 1 (which had generalized fine on 7 examples) instead. This
+    is a genuine whack-a-mole, not a fixable-with-more-data problem: unlike
+    ``2**n``'s resolved 9/9, no single fixed example set was found that gets
+    every tried seed to generalize. Recorded here rather than "fixed" by
+    picking whichever example count happens to pass this particular test.
     """
     fib = [0, 1, 1, 2, 3, 5, 8]
     examples = [Example({"n": n}, f) for n, f in enumerate(fib)]
     rng = np.random.default_rng(1)
+    best, _trace, verified = synthesize(
+        ["n"],
+        examples,
+        population_size=800,
+        max_generations=150,
+        max_depth=4,
+        allow_recursion=True,
+        resonant_bias=True,
+        fuel_budget=200,
+        rng=rng,
+    )
+    assert verified
+    for n, expected in [(7, 13), (8, 21), (9, 34)]:
+        assert evaluate(best, {"n": n}, Fuel(2000)) == expected
+
+
+def test_resonant_bias_can_discover_zero_indexed_fibonacci():
+    """``base_kind="param"`` (see ``_recursive_template`` and the extraction
+    test above) makes a *true* zero-indexed Fibonacci (``F(0)=0, F(1)=1``)
+    directly discoverable, without reindexing the target to ``F(1)=F(2)=1``
+    to work around the grammar the way the test above still has to (that
+    test predates ``base_kind`` and is kept as-is since it's still a valid,
+    still-useful torture test of the ``base_kind="const"`` branch).
+    """
+    fib = [0, 1, 1, 2, 3, 5, 8]
+    examples = [Example({"n": n}, f) for n, f in enumerate(fib)]
+    rng = np.random.default_rng(0)
     best, _trace, verified = synthesize(
         ["n"],
         examples,

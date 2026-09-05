@@ -51,14 +51,11 @@ energy minimisation, resonance) over designs that special-case a symbolic path.
 - Implement a sequence encoder (bind + permute) and a cleanup-memory decoder.
 - Add a `matplotlib` experiment that plots entropy vs. β and energy vs. step.
 - Improve asymmetric-recursion (Fibonacci-class) discovery reliability
-  (`tier4_synthesis`, see `docs/ROADMAP.md` v0.16): at the current
-  stagnation-annealed `delta_p1` schedule, seed 4 fails to verify and seed 7
-  "verifies" with a solution that doesn't generalize to held-out points —
-  either tune the schedule, or check candidates against a couple of
-  extra/held-out points *during* the search so overfit solutions never win.
-- Extend `_recursive_template`'s base case beyond a fixed `Const(base_val)`
-  (e.g. allow `Var(param)`) so true zero-indexed Fibonacci (`F(0)=0`) is
-  expressible, not just the shifted `F(1)=F(2)=1` variant.
+  (`tier4_synthesis`, see `docs/ROADMAP.md` v0.17): still open after v0.17 -
+  adding one more training example fixed seeds 4/7 but broke seed 1, a
+  genuine whack-a-mole, not a fixable-with-more-data problem. Needs a real
+  fix (e.g. tune the `delta_p1` schedule itself), not another example-count
+  tweak — that direction was tried and shown not to generalize across seeds.
 
 ## Don't
 

@@ -281,6 +281,38 @@ the failure mode this module's "verified is not proof" honesty statement
 exists for. See `tests/test_synthesis.py`'s
 `test_resonant_bias_can_discover_fibonacci` for the exact, checked claim.
 
+**Zero-indexed Fibonacci (`base_kind`): one clean win, one honest non-win.**
+Two follow-ups were identified after `delta` landed. The first: the
+template's base case was always `Const(base_val)` - a fixed number, which
+can never equal the varying parameter, so real Fibonacci (`F(0)=0`) wasn't
+expressible at all, only the reindexed `F(1)=F(2)=1` workaround was. Added
+`base_kind` (`"const"` keeps the old `Const(base_val)` behaviour, `"param"`
+uses `Var(param)` itself as the base case) as a third structural hole, drawn
+uniformly and never resonance-biased - the same reasoning as `combine_kind`
+and `delta`. Verified via 2000 round-trip draws (0 mismatches) and a
+hand-built `if p<=1 then p else f(p-1)+f(p-2)` that evaluates correctly and
+extracts to exactly the expected hole-fillers
+(`test_extract_template_choices_handles_param_base_case`). Real zero-indexed
+Fibonacci is then genuinely discoverable and held-out-generalizing on
+multiple seeds (`test_resonant_bias_can_discover_zero_indexed_fibonacci`),
+and re-checking `2**n` on seeds 0/4/7 confirmed the extra structural coin
+flip doesn't regress its reliability (all three still verify and generalize,
+just with different per-seed runtimes than before - expected chaotic
+sensitivity in a GP search, not a regression).
+
+The second follow-up - closing the `delta_p1`-schedule gap so Fibonacci
+(seeds 4 and 7) is as reliable as `2**n` - was tried and genuinely does
+**not** have a clean fix, a result worth recording rather than papering over.
+Adding one more training example (`n=7`, 8 examples instead of 7 for the
+shifted-indexing target) *did* fix both: seed 4 went from not-verified to
+verified-and-generalizing, and seed 7 stopped overfitting. But the same
+change broke seed 1, which had generalized fine on the original 7 examples.
+This is a genuine whack-a-mole, not a fixable-with-more-data problem the way
+the `list_sum` target's overfitting was (see `test_synthesize_recovers_
+list_sum_via_fold`'s comment) - no single fixed example count was found that
+gets every seed tried to generalize. Left as an open, honestly-scoped
+good-first-task rather than closed with a claim the evidence doesn't support.
+
 ## GA-HDC (experimental) - `geometric.py`
 A small Clifford algebra Cl(n,0), `n <= 6` (up to 64 blade coefficients),
 **additive** alongside the existing D-dimensional complex-phasor
