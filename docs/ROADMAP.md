@@ -175,6 +175,42 @@
       recursion synthesis is now reliable (7 of 9 seeds still fail). `zeuss
       synth` CLI demo now includes this as Scenario 3.
 
+## v0.15 — closing the gap: 9/9, by diagnosing the other 7 rather than tuning
+- [x] Per user request to actually reach 9/9 rather than stop at "sometimes":
+      diagnosed *why* the other 7 seeds failed instead of just scaling
+      compute. Found the winning `2**n` solution (`f(n-1)+f(n-1)`) doesn't
+      match `_recursive_template`'s only shape at all - it needs two
+      recursive calls combined, not one combined with the parameter. Added a
+      second shape, `f(p-step) OP f(p-step)` (`combine_kind`), directly
+      generatable and reinforceable via `ResonantBias` instead of relying on
+      mutation to build it from nothing (confirmed via `extract_template_choices`
+      that the actual winning structure was previously unreinforceable).
+      This alone made the success rate *worse* (0/6) until diagnosing that
+      too: the two-call shape's call tree grows exponentially, so it hits
+      fuel exhaustion (and gets penalized as a near-total failure) far more
+      readily than the one-call shape for equally-bad hole-fillers,
+      confirmed by computing the exact fuel cost by hand (`T(n) = 1 +
+      2*T(n-1)`, `T(4) = 31` - already close to the old 60-fuel default) -
+      biasing the resonance memory toward the wrong shape before either got
+      a fair trial. Fixed two ways: made `combine_kind` itself exempt from
+      resonance bias (always drawn uniformly - only the *fine-tuning within*
+      a chosen shape is biased, so premature commitment to the wrong family
+      can't happen), and exposed `fuel_budget` as a `synthesize` parameter,
+      raised to 200. Also simplified `double_recur` to a single shared step
+      on both calls (dropping an independent `step2`) - halves the
+      combinatorial search burden for a shape that's symmetric in the
+      target case, at the honest cost of not covering asymmetric recursion
+      like Fibonacci (now the load-bearing example in
+      `test_recursion_synthesis_is_safe_but_not_reliably_found`).
+
+      Result: at one fixed configuration (`population_size=800,
+      max_generations=150, fuel_budget=200, allow_recursion=True,
+      resonant_bias=True`), **all 9 of 9 seeds tried found a genuinely
+      correct, held-out-generalizing `2**n`** (checked for n up to 9). Not a
+      cherry-picked seed - the same configuration re-run across every seed
+      tried in v0.14's comparison. `zeuss synth` CLI Scenario 3 updated to
+      this configuration.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

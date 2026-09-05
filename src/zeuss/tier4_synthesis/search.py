@@ -209,12 +209,28 @@ def _grow(
 # The hole categories _recursive_template fills in, and their possible
 # values - shared with ResonantBias so a bias object's categories always
 # line up with what the template actually samples.
+#
+# "combine_kind" picks between two recursive shapes:
+#   param_recur  - p OP f(p - step)                 (e.g. factorial: n * f(n-1))
+#   double_recur - f(p - step) OP f(p - step)        (e.g. 2**n: f(n-1) + f(n-1))
+# The second shape was added after finding, empirically, that the actual
+# winning 2**n solution discovered via mutation (f(n-1)+f(n-1)) does *not*
+# match param_recur at all - mutation had to build it from scratch with zero
+# direct template/reinforcement support. Giving the search direct access to
+# generate *and* reinforce this shape, instead of hoping mutation stumbles
+# into it, is the fix. double_recur uses the *same* step for both calls
+# (symmetric divide-and-conquer/doubling, not asymmetric Fibonacci-style
+# recursion) - a deliberate scope cut: an independent second step multiplies
+# the combinatorial search burden for a shape that, empirically, is almost
+# always symmetric in practice, and the immediate goal (2**n) is exactly
+# symmetric.
 TEMPLATE_CATEGORIES: dict[str, list] = {
     "cmp": ["==", "<=", "<"],
     "base_const": [0, 1, 2],
     "base_val": [0, 1, 2],
     "step": [1, 2],
     "op": list(_BINOPS),
+    "combine_kind": ["param_recur", "double_recur"],
 }
 
 
@@ -224,18 +240,21 @@ def _recursive_template(
     rng: np.random.Generator,
     bias: "ResonantBias | None" = None,
 ) -> tuple[Node, dict] | tuple[None, None]:
-    """A structural bias toward the single most common recursive shape:
-    decrement-and-combine - ``letrec f(p) = if p CMP k then base else p OP
-    f(p - step) in f(seed)``. GP still has to tune the comparison, constants,
-    and combining operator, but starts from the right high-level *shape*
-    instead of needing mutation to discover it from nothing: empirically,
-    under 5% of random depth-4 trees even contain a ``Letrec`` with an
-    ``If``-shaped body (the bare minimum for a base case) - see the module
-    docstring. Returns ``(None, None)`` if there's no scalar input to recurse
-    on. If ``bias`` is given, hole-fillers are drawn from it (resonance-biased
-    toward historically successful values) instead of uniformly at random.
-    Returns ``(node, choices)`` - ``choices`` is needed so the caller can
-    later :meth:`ResonantBias.reinforce` based on how the individual scores.
+    """A structural bias toward the two most common recursive shapes:
+    ``letrec f(p) = if p CMP k then base else COMBINE in f(seed)``, where
+    COMBINE is either ``p OP f(p - step)`` (param_recur) or
+    ``f(p - step) OP f(p - step)`` (double_recur - symmetric
+    divide-and-conquer/doubling shapes like ``2**n``). GP still has to tune
+    the comparison, constants, and combining operator, but starts from a
+    working high-level *shape* instead of needing mutation to discover one from
+    nothing: empirically, under 5% of random depth-4 trees even contain a
+    ``Letrec`` with an ``If``-shaped body (the bare minimum for a base case).
+    Returns ``(None, None)`` if there's no scalar input to recurse on. If
+    ``bias`` is given, hole-fillers (including which shape) are drawn from it
+    (resonance-biased toward historically successful values) instead of
+    uniformly at random. Returns ``(node, choices)`` - ``choices`` is needed
+    so the caller can later :meth:`ResonantBias.reinforce` based on how the
+    individual scores.
     """
     scalars = [n for n in inputs if n not in list_inputs]
     if not scalars:
@@ -243,6 +262,16 @@ def _recursive_template(
     name = f"_rec{int(rng.integers(0, 10_000))}"
     param = f"_p{int(rng.integers(0, 10_000))}"
     seed_var = str(rng.choice(scalars))
+    # combine_kind (which recursive *shape*) is deliberately drawn uniformly,
+    # never resonance-biased: reinforcing which shape to use risks premature
+    # commitment to the wrong family from early noise (found empirically -
+    # double_recur candidates fail *harder*, via fuel exhaustion on their
+    # exponential call trees, than param_recur ones fail on theirs, making
+    # param_recur look artificially better before either has had a fair
+    # chance). Keeping the family choice unbiased means both shapes always
+    # get an even shot every generation; only the fine-tuning *within*
+    # whichever shape gets drawn (cmp, constants, operator, step) is biased.
+    combine_kind = str(rng.choice(TEMPLATE_CATEGORIES["combine_kind"]))
     if bias is not None:
         cmp = bias.sample("cmp", rng)
         base_const = bias.sample("base_const", rng)
@@ -255,24 +284,44 @@ def _recursive_template(
         base_val = int(rng.choice(TEMPLATE_CATEGORIES["base_val"]))
         step = int(rng.choice(TEMPLATE_CATEGORIES["step"]))
         op = str(rng.choice(TEMPLATE_CATEGORIES["op"]))
-    choices = {"cmp": cmp, "base_const": base_const, "base_val": base_val, "step": step, "op": op}
-    body = If(
-        BinOp(cmp, Var(param), Const(base_const)),
-        Const(base_val),
-        BinOp(op, Var(param), Recur(name, (BinOp("-", Var(param), Const(step)),))),
-    )
+
+    choices = {
+        "cmp": cmp,
+        "base_const": base_const,
+        "base_val": base_val,
+        "step": step,
+        "op": op,
+        "combine_kind": combine_kind,
+    }
+    if combine_kind == "double_recur":
+        recur_arg = BinOp("-", Var(param), Const(step))
+        combine = BinOp(op, Recur(name, (recur_arg,)), Recur(name, (recur_arg,)))
+    else:
+        combine = BinOp(op, Var(param), Recur(name, (BinOp("-", Var(param), Const(step)),)))
+    body = If(BinOp(cmp, Var(param), Const(base_const)), Const(base_val), combine)
     node = Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
     return node, choices
 
 
+def _is_decrement_of(expr: Node, param: str) -> bool:
+    return (
+        isinstance(expr, BinOp)
+        and expr.op == "-"
+        and isinstance(expr.left, Var)
+        and expr.left.name == param
+        and isinstance(expr.right, Const)
+    )
+
+
 def extract_template_choices(node: Node) -> dict | None:
-    """If ``node`` structurally matches the decrement-and-combine template
-    shape - regardless of whether it came from :func:`_recursive_template` or
-    was evolved into that shape by ordinary mutation/crossover - extract its
-    hole-fillers for :meth:`ResonantBias.reinforce`. Returns ``None`` if it
-    doesn't match. Matching on observed *structure* rather than provenance
-    means the bias learns from whatever the population actually converges on,
-    not just from candidates the template generator happened to produce.
+    """If ``node`` structurally matches either recursive template shape (see
+    :func:`_recursive_template`) - regardless of whether it came from the
+    template generator or was evolved into that shape by ordinary mutation/
+    crossover - extract its hole-fillers for :meth:`ResonantBias.reinforce`.
+    Returns ``None`` if it doesn't match either shape. Matching on observed
+    *structure* rather than provenance means the bias learns from whatever
+    the population actually converges on, not just from candidates the
+    template generator happened to produce.
     """
     if not isinstance(node, Letrec) or len(node.params) != 1:
         return None
@@ -291,27 +340,37 @@ def extract_template_choices(node: Node) -> dict | None:
     if not isinstance(body.then, Const):
         return None
     combine = body.orelse
-    if not (isinstance(combine, BinOp) and isinstance(combine.left, Var) and combine.left.name == param):
+    if not isinstance(combine, BinOp):
         return None
-    recur_call = combine.right
-    if not (isinstance(recur_call, Recur) and recur_call.name == node.name and len(recur_call.args) == 1):
-        return None
-    step_expr = recur_call.args[0]
-    if not (
-        isinstance(step_expr, BinOp)
-        and step_expr.op == "-"
-        and isinstance(step_expr.left, Var)
-        and step_expr.left.name == param
-        and isinstance(step_expr.right, Const)
+
+    base = {"cmp": cond.op, "base_const": cond.right.value, "base_val": body.then.value, "op": combine.op}
+
+    # double_recur: f(p - step) OP f(p - step), same step on both sides
+    if (
+        isinstance(combine.left, Recur)
+        and isinstance(combine.right, Recur)
+        and combine.left.name == node.name
+        and combine.right.name == node.name
+        and len(combine.left.args) == 1
+        and len(combine.right.args) == 1
+        and _is_decrement_of(combine.left.args[0], param)
+        and _is_decrement_of(combine.right.args[0], param)
+        and combine.left.args[0].right.value == combine.right.args[0].right.value
     ):
+        choices = {**base, "step": combine.left.args[0].right.value, "combine_kind": "double_recur"}
+    # param_recur: p OP f(p - step)
+    elif (
+        isinstance(combine.left, Var)
+        and combine.left.name == param
+        and isinstance(combine.right, Recur)
+        and combine.right.name == node.name
+        and len(combine.right.args) == 1
+        and _is_decrement_of(combine.right.args[0], param)
+    ):
+        choices = {**base, "step": combine.right.args[0].right.value, "combine_kind": "param_recur"}
+    else:
         return None
-    choices = {
-        "cmp": cond.op,
-        "base_const": cond.right.value,
-        "base_val": body.then.value,
-        "op": combine.op,
-        "step": step_expr.right.value,
-    }
+
     if any(choices[k] not in TEMPLATE_CATEGORIES[k] for k in choices):
         return None  # a value outside the known category set - not reinforceable
     return choices
@@ -581,6 +640,7 @@ def synthesize(
     allow_recursion: bool = False,
     template_rate: float = 0.15,
     resonant_bias: bool = True,
+    fuel_budget: int = 60,
     rng: np.random.Generator | None = None,
 ):
     """Search for a program satisfying ``examples`` via mutation/crossover,
@@ -643,7 +703,7 @@ def synthesize(
     beta_trace: list[float] = []
 
     for _generation in range(max_generations):
-        raw_energies = np.array([program_energy(p, examples) for p in population])
+        raw_energies = np.array([program_energy(p, examples, fuel_budget) for p in population])
         idx_best = int(np.argmin(raw_energies))
         if raw_energies[idx_best] < best_energy:
             best_energy = float(raw_energies[idx_best])
@@ -674,5 +734,5 @@ def synthesize(
         population = next_population
         beta = min(beta * beta_growth, beta_max)
 
-    verified = program_energy(best_node, examples) <= 1e-9
+    verified = program_energy(best_node, examples, fuel_budget) <= 1e-9
     return best_node, beta_trace, verified

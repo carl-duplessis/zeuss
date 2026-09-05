@@ -30,6 +30,7 @@ def synthesize(
     max_depth: int = 4,
     allow_recursion: bool = False,
     resonant_bias: bool = True,
+    fuel_budget: int = 60,
     rng: np.random.Generator | None = None,
 ):
     """Search for a program satisfying ``examples``.
@@ -38,7 +39,11 @@ def synthesize(
     default - see :func:`.search.synthesize`'s docstring for why); when set,
     ``resonant_bias`` enables resonance-guided template seeding, which can
     discover genuinely recursive solutions that uniform random search does
-    not reliably find (see :mod:`.resonance_bias`).
+    not reliably find (see :mod:`.resonance_bias`). ``fuel_budget`` may need
+    raising well above the default for recursive targets: the ``double_recur``
+    template shape's exponential call trees exhaust a small fuel budget long
+    before reaching a correct answer, even when the candidate is actually
+    correct (see :func:`.search.program_energy`'s docstring).
 
     Returns ``(best_node, beta_trace, verified)`` - see :func:`.search.synthesize`.
     """
@@ -51,6 +56,7 @@ def synthesize(
         max_depth=max_depth,
         allow_recursion=allow_recursion,
         resonant_bias=resonant_bias,
+        fuel_budget=fuel_budget,
         rng=rng,
     )
 

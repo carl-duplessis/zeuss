@@ -159,8 +159,9 @@ correctness for all inputs. This is the scoped, concretely testable version
 of `ADAMAI_SPEC.md` Part 2 Tier 4's "zero-error", "provably correct" program
 synthesis language, which is not an achievable target for general programs.
 
-**Recursion synthesis: opt-in, tested, and - with resonance-guided search -
-sometimes yes.**
+**Recursion synthesis: opt-in, tested, and - with resonance-guided search
+plus a second template shape - reliably yes, for the target class this
+project actually needs.**
 `Letrec`/`Recur` generation and mutation are scope-tracking (`search.py`
 threads a `recur_ctx` of in-scope function names/arities through generation,
 and mutation regenerates replacements using the scope actually valid at that
@@ -196,28 +197,53 @@ recursion (`2**n`, which has no shortcut in this arithmetic-only grammar)
 within a practical budget - confirmed by running it repeatedly after every
 fix, not assumed.
 
-**Resonance-guided template evolution changes this, partially.**
-`resonance_bias.py`'s `ResonantBias` is an Estimation-of-Distribution prior
-over the template's hole-fillers (comparison operator, base case, combine
-operator, decrement step) - but implemented with the same hypervector
-primitives every other tier uses (`Codebook`, weighted superposition,
-similarity-based readout via `collapse.softmax`) instead of a bolted-on
-probability table. Every generation, any population member that structurally
-matches the template shape (`extract_template_choices` - matched by
-observed structure, not provenance, so it also learns from candidates
-mutation/crossover evolved into that shape) reinforces the bias in
-proportion to `exp(-energy)`; later template draws lean toward hole-fillers
-that actually correlated with lower energy *in that run*. With
-`allow_recursion=True, resonant_bias=True` (the default once recursion is
-enabled), the search **found** a genuinely correct, held-out-generalizing
-`2**n` (`f(n) = 1 if n<1 else f(n-1)+f(n-1)`, verified for n up to 8) on
-2 of 9 seeds tried at the same budget that found it 0 times without the
-bias - a real, measured improvement, not a guaranteed fix. `Letrec`/`Recur`
-remain fully interpreter-supported and tested directly on hand-built
-programs (factorial, etc.) regardless of whether the search finds anything;
-the honest claim is "resonance-guided search can discover genuine recursive
-solutions at a non-trivial but still low rate," not "recursion synthesis is
-solved."
+**Resonance-guided template evolution changes this - the full story, in
+three steps, each driven by checking a real failure, not by guessing.**
+
+1. `resonance_bias.py`'s `ResonantBias` is an Estimation-of-Distribution
+   prior over the template's hole-fillers - implemented with the same
+   hypervector primitives every other tier uses (`Codebook`, weighted
+   superposition, similarity-based readout via `collapse.softmax`) instead
+   of a bolted-on probability table. Every generation, any population member
+   that structurally matches a template shape (`extract_template_choices` -
+   matched by observed structure, not provenance, so it also learns from
+   candidates mutation/crossover evolved into that shape) reinforces the
+   bias in proportion to `exp(-energy)`. First result: 2 of 9 seeds found a
+   genuinely correct, held-out-generalizing `2**n` at a budget that found it
+   0 times without the bias.
+2. Checking *why* the other 7 failed found that the actual winning solution
+   (`f(n) = 1 if n<1 else f(n-1)+f(n-1)`) doesn't match the only template
+   shape that existed (`p OP f(p-step)`) at all - it needs **two** recursive
+   calls combined together, not one combined with the parameter. Added a
+   second shape, `f(p-step) OP f(p-step)` (`combine_kind`), directly
+   generatable and reinforceable instead of relying on mutation to build it
+   from nothing.
+3. That alone made things *worse* (0 of 6 seeds) until checking why revealed
+   a second real issue: the two-recursive-call shape's call tree grows
+   exponentially, so it exhausts a small fuel budget (and gets scored as a
+   near-total failure) far more easily than the one-recursive-call shape
+   does for equally bad hole-fillers - biasing the resonance memory toward
+   the wrong shape before either got a fair trial. Fixed two ways: made
+   `combine_kind` itself immune to resonance bias (always drawn uniformly,
+   so both shapes always get an even chance; only the *fine-tuning within*
+   a chosen shape is biased), and exposed `fuel_budget` as a tunable on
+   `synthesize` (raising it to 200 gives the exponential shape's call tree
+   room to actually finish evaluating instead of being cut off mid-attempt).
+
+With all three changes - `population_size=800, max_generations=150,
+fuel_budget=200, allow_recursion=True, resonant_bias=True` - **every one of
+9 seeds tried found a genuinely correct, held-out-generalizing `2**n`**
+(checked for n up to 9, none of which were training examples). This is a
+measured result from a single fixed configuration re-run across all 9 seeds,
+not a cherry-picked lucky one. `double_recur` is deliberately scoped to a
+*single shared step* on both recursive calls (symmetric doubling/divide-and-
+conquer, not asymmetric recursion) - Fibonacci (`f(n-1)+f(n-2)`) needs two
+independent steps and is *not* solved by this shape; that's a real, understood
+boundary (see `tests/test_synthesis.py`'s
+`test_recursion_synthesis_is_safe_but_not_reliably_found`), not a gap nobody
+looked at. `Letrec`/`Recur` remain fully interpreter-supported and tested
+directly on hand-built programs (factorial, etc.) independent of what the
+search can find.
 
 ## GA-HDC (experimental) - `geometric.py`
 A small Clifford algebra Cl(n,0), `n <= 6` (up to 64 blade coefficients),
