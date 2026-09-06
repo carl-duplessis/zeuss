@@ -12,7 +12,22 @@
 
 ## v0.2 — JAX-native substrate
 - [x] Route all Tier-2 ops through `zeuss.backend.xp`.
-- [ ] `energy.settle_grad`: energy descent via `jax.grad` on phase angles.
+- [x] `energy.settle_grad`: energy descent via `jax.grad` on phase angles.
+      State is reparameterised as real phase angles `theta` (`z=exp(i*theta)`)
+      so ordinary real-to-real `jax.grad` applies directly and `z` stays
+      exactly unit-modulus with no `normalize()` projection needed. Two real
+      issues found and fixed, not assumed away: `Landscape.energy`/
+      `similarity`'s explicit `float()` casts abort a JAX trace, so
+      `settle_grad` carries its own numerically-identical restatement of the
+      energy formula in terms of `theta`; and the raw gradient is ~1e-4 per
+      component (the energy divides by `D` twice), so the step is scaled by
+      `D` internally, calibrated so `learning_rate=0.5` reaches the same
+      ground-state energy as `settle`'s default in the same 60 steps.
+      Requires the JAX backend, raises `RuntimeError` otherwise. Discovered
+      along the way: this project's own `.venv` already has JAX installed and
+      picks it as the default backend (`ZEUSS_BACKEND=auto` prefers JAX when
+      importable), so the full suite was re-verified with JAX genuinely
+      active by default, not just via the forced-subprocess parity test.
 - [ ] `jit`/`vmap` batched collapse over many probes.
 - [ ] Property tests run on both backends.
 

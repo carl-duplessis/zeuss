@@ -46,8 +46,6 @@ energy minimisation, resonance) over designs that special-case a symbolic path.
 
 ## Good first tasks (see docs/ROADMAP.md for the full list)
 
-- Add a JAX `grad`-based energy-descent variant of `energy.settle`
-  (`energy.settle_grad`) — the `xp` routing it needs is already done (v0.2).
 - Implement a sequence encoder (bind + permute) and a cleanup-memory decoder.
 - Add a `matplotlib` experiment that plots entropy vs. β and energy vs. step.
 - Improve asymmetric-recursion (Fibonacci-class) discovery reliability

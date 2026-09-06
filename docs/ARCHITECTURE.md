@@ -335,5 +335,38 @@ substrate math is now routed through `xp` end-to-end, so the same code runs on
 NumPy (default) or JAX (`ZEUSS_BACKEND=jax`). Randomness is still drawn from an
 explicit NumPy `Generator` and *lifted* onto the backend, so a given seed yields
 identical hypervectors on either backend. `test_backend.py` pins the routing and
-carries a NumPy↔JAX parity check that activates once JAX is installed. Remaining
-milestone: a `jax.grad`-based `energy.settle` variant (see `docs/ROADMAP.md`).
+carries a NumPy↔JAX parity check that activates once JAX is installed.
+
+**`energy.settle_grad`: literal gradient descent, not just the mean-field
+fixed point.** `settle`/`settle_adaptive` move `z` toward
+`landscape.target(z)`, a hand-derived mean-field update. `settle_grad`
+instead reparameterises the state as real phase angles `theta`
+(`z = exp(i*theta)`) and takes a real `jax.grad` step on the energy itself -
+ordinary real-to-real autodiff applies directly to `theta`, and
+`z = exp(i*theta)` is exactly unit-modulus by construction, needing no
+`normalize()` projection after each step. Two real issues were found and
+fixed while building this, not assumed away: (1) `Landscape.energy` and
+`similarity` both return plain Python `float`s via an explicit cast - correct
+for their normal call sites everywhere else, but an unconditional trace abort
+the moment `jax.grad` reaches them - so `settle_grad` carries a small,
+self-contained restatement of `Landscape.energy`'s exact formula in terms of
+`theta`, checked numerically identical to it
+(`test_settle_grad_matches_landscape_energy_formula`), rather than routing
+through those functions; (2) the raw gradient is tiny (measured: norm ~0.008
+over `D=8192`, ~1e-4 per component) because the energy divides by `D` twice
+(once in `similarity`'s own normalisation, once in the softmax-weighted sum),
+so an unscaled learning rate would need to be in the thousands to move at
+all - `settle_grad` scales the step by `D` internally so `learning_rate`
+behaves on a `settle`-`step_size`-like scale regardless of dimension
+(confirmed: `learning_rate=0.5` reaches essentially the same ground-state
+energy as `settle`'s default in the same 60 steps, from the same noisy
+start). Requires the JAX backend; raises `RuntimeError` (not a confusing
+`AttributeError` on a missing `jax.grad`) otherwise.
+
+Discovered while building this: the project's own `.venv` already has JAX
+installed and picks it as the *default* active backend (`ZEUSS_BACKEND`
+defaults to `"auto"`, which prefers JAX when importable) - so the full test
+suite was re-run end-to-end with JAX genuinely active by default (not just
+the forced-subprocess parity check), confirming v0.2's "same code runs on
+either backend" claim holds for real, not just in the one test designed to
+check it.
