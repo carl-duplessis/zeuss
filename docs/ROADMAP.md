@@ -467,6 +467,40 @@
       `test_resonant_bias_can_discover_fibonacci`; full suite green (101
       passed, 10 skipped) in ~94s, down from ~820s when the stuck searches
       were burning their full generation budget every run.
+- [x] Also checked every seed named in the older writeups this session
+      touched, not just the committed tests, since a fix this targeted is
+      worth verifying honestly rather than declaring done at green CI.
+      Fibonacci: v0.16/v0.17 documented seed 4 as not verifying and seed 7
+      as "verifying" on a degenerate, non-generalizing expression - both now
+      verify *and* genuinely generalize, at the same seeds 0/1 that already
+      worked. `2**n`: v0.15's "9/9 dev seeds" claim (seeds 0-8) no longer
+      holds - seed 8 now fails, confirmed via an isolated worktree checkout
+      of the pre-this-session commit (`fce9ba7`) that it did verify there
+      (energy 0.0), so this is a real regression, not pre-existing drift.
+- [x] Dug into seed 8 rather than leaving it as an unexplained flake.
+      Instrumenting it showed a different failure mode than the Hamming-1
+      lock-in above: a non-template, crossover-mangled expression reaches
+      energy 1.0 by generation 8 (better than any clean template family, all
+      stuck at 2.0), so fitness-proportionate selection starves templates
+      down to ~30-40/800 for the rest of the 150-generation budget - neither
+      the hack nor the templates ever reach 0. Isolated the cause by
+      re-running with per-family elitism disabled entirely (still failed,
+      ruling elitism out) and then with `_TEMPLATE_HOLE_MUTATION_RATE`
+      forced to 0.0 (pure full-regrowth, no elitism) - that combination
+      *did* solve it (generation 50, verified). So the rate introduced by
+      the real fix above is the cause: 0.5 gives templates enough surgical
+      refinement to escape v0.16/v0.17's stuck Fibonacci seeds, but costs
+      them enough full-regrowth diversity that this one `2**n` seed's
+      competing non-template hack wins the population instead. Tried
+      lowering the rate to 0.2 as a candidate middle ground: fixed seed 8,
+      but broke `test_resonant_bias_can_discover_fibonacci` itself (seed 1
+      still "verified" but stopped generalizing) and lost fib seed 0's
+      result too - the identical whack-a-mole shape as the `delta_p1`
+      finding in v0.16, just in a different knob. `0.5` was kept as
+      committed: it's the value that keeps every actually-asserted test
+      green, not an arbitrary pick that happens to leave one gap. Seed 8 is
+      left as an honest, deliberately-not-chased limitation, the same way
+      v0.17 left its own seed-generalization gap rather than tune around it.
 - [x] `CLAUDE.md`'s good-first-tasks entry for this (open since v0.17)
       removed - no longer an open item.
 
