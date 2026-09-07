@@ -369,6 +369,181 @@ def _build_template_node(name: str, param: str, seed_var: str, choices: dict) ->
     return Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
 
 
+# A structural bias toward the most common fold shapes, mirroring
+# _recursive_template's role but for list processing rather than recursion -
+# added after the v0.22 audit (docs/ROADMAP.md) found list-op targets were
+# generated and mutated by the same blind uniform _grow/mutate used for
+# arbitrary arithmetic, with no template, no per-shape elitism, and no bias
+# toward historically-successful hole values, unlike recursion.
+#
+# "combine_op" picks the accumulator-combining operator - "+" for sum-like
+# folds, "*" for product-like ones. "item_kind" picks how each element is
+# transformed before combining: "identity" (sum), "square" (sum of squares -
+# the target that originally motivated this), or "cmp_const" (element
+# compared against a constant, e.g. counting elements > 0 - the comparison
+# coerces to an int the same way _mismatch already treats bool/int
+# elsewhere in this module). Both are drawn uniformly, never resonance-
+# biased, for the same reason _recursive_template keeps combine_kind/
+# base_kind out of the learned bias: they are structural/family choices, and
+# reinforcing which family to use risks premature commitment to the wrong
+# one from early noise. "cmp"/"const" (only meaningful for item_kind=
+# "cmp_const") are the tunable holes - see _FOLD_TUNABLE_HOLES.
+FOLD_TEMPLATE_CATEGORIES: dict[str, list] = {
+    "combine_op": ["+", "*"],
+    "item_kind": ["identity", "square", "cmp_const"],
+    "cmp": ["==", "!=", "<", "<=", ">", ">="],
+    "const": [-2, -1, 0, 1, 2],
+}
+
+
+def _fold_item_expr(item_var: str, choices: dict) -> Node:
+    kind = choices["item_kind"]
+    if kind == "identity":
+        return Var(item_var)
+    if kind == "square":
+        return BinOp("*", Var(item_var), Var(item_var))
+    return BinOp(choices["cmp"], Var(item_var), Const(choices["const"]))
+
+
+def _fold_init_for(combine_op: str) -> Node:
+    """The identity element for ``combine_op`` - ``0`` for ``+``, ``1`` for
+    ``*`` - derived rather than sampled as its own hole, keeping the
+    combinatorial search burden down the same way ``delta`` is a small
+    offset from ``step`` rather than a fully independent value (see
+    ``_recursive_template``'s docstring)."""
+    return Const(0) if combine_op == "+" else Const(1)
+
+
+def _build_fold_template_body(acc_var: str, item_var: str, choices: dict) -> Node:
+    """Build just the ``acc COMBINE_OP item_expr`` body from a complete
+    fold-template ``choices`` dict - split out the same way
+    ``_build_template_body`` is, so :func:`_mutate_fold_template_hole` can
+    rebuild only the body, leaving ``list_expr``/``init`` untouched."""
+    return BinOp(choices["combine_op"], Var(acc_var), _fold_item_expr(item_var, choices))
+
+
+def _build_fold_template_node(list_name: str, acc_var: str, item_var: str, choices: dict) -> Node:
+    body = _build_fold_template_body(acc_var, item_var, choices)
+    return Fold(Var(list_name), _fold_init_for(choices["combine_op"]), acc_var, item_var, body)
+
+
+def _fold_template(
+    list_inputs: tuple[str, ...],
+    rng: np.random.Generator,
+    bias: "ResonantBias | None" = None,
+) -> tuple[Node, dict] | tuple[None, None]:
+    """A structural bias toward ``fold(xs, init, acc, item, acc COMBINE_OP
+    transform(item))`` - see :data:`FOLD_TEMPLATE_CATEGORIES` for the
+    transform choices. Returns ``(None, None)`` if there's no list input to
+    fold over. If ``bias`` is given, ``cmp``/``const`` are drawn from it
+    (resonance-biased toward historically successful values) instead of
+    uniformly at random - mirrors :func:`_recursive_template`'s bias/no-bias
+    split exactly."""
+    if not list_inputs:
+        return None, None
+    list_name = str(rng.choice(list_inputs))
+    combine_op = str(rng.choice(FOLD_TEMPLATE_CATEGORIES["combine_op"]))
+    item_kind = str(rng.choice(FOLD_TEMPLATE_CATEGORIES["item_kind"]))
+    if bias is not None:
+        cmp = bias.sample("cmp", rng)
+        const = bias.sample("const", rng)
+    else:
+        cmp = str(rng.choice(FOLD_TEMPLATE_CATEGORIES["cmp"]))
+        const = int(rng.choice(FOLD_TEMPLATE_CATEGORIES["const"]))
+    choices = {"combine_op": combine_op, "item_kind": item_kind}
+    if item_kind == "cmp_const":
+        choices["cmp"] = cmp
+        choices["const"] = const
+    node = _build_fold_template_node(list_name, "_acc", "_item", choices)
+    return node, choices
+
+
+# The tunable holes for the fold template - mirrors _TUNABLE_HOLES exactly:
+# only meaningful (and only ever populated in a choices dict) when
+# item_kind == "cmp_const".
+_FOLD_TUNABLE_HOLES = ("cmp", "const")
+
+
+def _uniform_fold_hole(key: str, rng: np.random.Generator):
+    options = FOLD_TEMPLATE_CATEGORIES[key]
+    value = options[int(rng.integers(0, len(options)))]
+    return int(value) if key == "const" else str(value)
+
+
+def _mutate_fold_template_hole(node: Node, rng: np.random.Generator, bias: "ResonantBias | None") -> Node | None:
+    """The fold-template counterpart to :func:`_mutate_template_hole`:
+    redraw exactly one tunable hole-filler (``cmp`` or ``const``) of a
+    fold-template-shaped node in place, rather than uniform random subtree
+    replacement. Returns ``None`` if ``node`` doesn't structurally match the
+    fold template shape or has no tunable hole (any ``item_kind`` other than
+    ``cmp_const`` has none - a defensive fallback, not the common case, the
+    same as ``_mutate_template_hole``'s)."""
+    choices = extract_fold_template_choices(node)
+    if choices is None or not isinstance(node, Fold):
+        return None
+    tunable = [k for k in _FOLD_TUNABLE_HOLES if k in choices]
+    if not tunable:
+        return None
+    key = tunable[int(rng.integers(0, len(tunable)))]
+    new_choices = dict(choices)
+    new_choices[key] = bias.sample(key, rng) if bias is not None else _uniform_fold_hole(key, rng)
+
+    new_body = _build_fold_template_body(node.var_acc, node.var_item, new_choices)
+    return Fold(node.list_expr, node.init, node.var_acc, node.var_item, new_body)
+
+
+def extract_fold_template_choices(node: Node) -> dict | None:
+    """If ``node`` structurally matches the fold template shape (see
+    :func:`_fold_template`) - regardless of whether it came from the
+    template generator or was evolved into that shape by ordinary mutation/
+    crossover - extract its hole-fillers for :meth:`ResonantBias.reinforce`.
+    Returns ``None`` if it doesn't match. Only validates the body shape
+    (``acc COMBINE_OP transform(item)``), never ``list_expr``/``init`` -
+    mirrors :func:`extract_template_choices` only validating the recursive
+    template's body, never its ``in_expr``, for the same reason: a
+    template-shaped individual mutation/crossover has since altered
+    elsewhere cannot be assumed to still have the canonical parts
+    :func:`_fold_template` itself always builds."""
+    if not isinstance(node, Fold):
+        return None
+    body = node.body
+    if not (isinstance(body, BinOp) and isinstance(body.left, Var) and body.left.name == node.var_acc):
+        return None
+    if body.op not in FOLD_TEMPLATE_CATEGORIES["combine_op"]:
+        return None
+    item_expr = body.right
+    if isinstance(item_expr, Var) and item_expr.name == node.var_item:
+        choices = {"combine_op": body.op, "item_kind": "identity"}
+    elif (
+        isinstance(item_expr, BinOp)
+        and item_expr.op == "*"
+        and isinstance(item_expr.left, Var)
+        and item_expr.left.name == node.var_item
+        and isinstance(item_expr.right, Var)
+        and item_expr.right.name == node.var_item
+    ):
+        choices = {"combine_op": body.op, "item_kind": "square"}
+    elif (
+        isinstance(item_expr, BinOp)
+        and item_expr.op in FOLD_TEMPLATE_CATEGORIES["cmp"]
+        and isinstance(item_expr.left, Var)
+        and item_expr.left.name == node.var_item
+        and isinstance(item_expr.right, Const)
+    ):
+        choices = {
+            "combine_op": body.op,
+            "item_kind": "cmp_const",
+            "cmp": item_expr.op,
+            "const": item_expr.right.value,
+        }
+    else:
+        return None
+
+    if any(choices[k] not in FOLD_TEMPLATE_CATEGORIES[k] for k in choices):
+        return None
+    return choices
+
+
 # Hole categories a template's *value* (not its structural family) is built
 # from - the ones _mutate_template_hole is allowed to retarget one at a time.
 # Mirrors _recursive_template's own bias/no-bias split: combine_kind, delta,
@@ -424,6 +599,13 @@ _RESTART_STAGNATION_FRACTION = 0.6
 # committed tests actually assert passing; don't retune this without
 # re-running that full seed sweep.
 _TEMPLATE_HOLE_MUTATION_RATE = 0.5
+
+# The fold-template counterpart to _TEMPLATE_HOLE_MUTATION_RATE. Same
+# default: no evidence yet that fold's much smaller hole space (two
+# tunable holes, cmp/const, only relevant for one of three item_kinds)
+# needs a different rate, and re-using the value already validated
+# against a full seed sweep is safer than guessing a new one.
+_FOLD_TEMPLATE_HOLE_MUTATION_RATE = 0.5
 
 
 def _mutate_template_hole(node: Node, rng: np.random.Generator, bias: "ResonantBias | None") -> Node | None:
@@ -566,6 +748,7 @@ def random_program(
     allow_recursion: bool = False,
     bias: ResonantBias | None = None,
     delta_p1: float = 0.15,
+    fold_bias: "ResonantBias | None" = None,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -580,11 +763,23 @@ def random_program(
     the template's hole-fillers toward historically successful values instead
     of uniform random choice. ``delta_p1`` is the probability of the
     asymmetric ``double_recur`` variant (see :func:`_recursive_template`).
+
+    ``fold_bias``, if given, is a second, independent :class:`ResonantBias`
+    over :data:`FOLD_TEMPLATE_CATEGORIES` - reusing the same ``template_rate``
+    to decide whether to return a :func:`_fold_template` skeleton instead of
+    pure random growth when ``list_inputs`` is non-empty. Checked *after* the
+    recursion template so the two never compete for the same draw when both
+    are available (recursion synthesis and list-op synthesis are not
+    currently combined in any committed target).
     """
     if allow_recursion and template_rate > 0 and rng.random() < template_rate:
         template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias, delta_p1)
         if template is not None:
             return template
+    if list_inputs and template_rate > 0 and rng.random() < template_rate:
+        fold_template, _fold_choices = _fold_template(tuple(list_inputs), rng, fold_bias)
+        if fold_template is not None:
+            return fold_template
     return _grow(list(inputs), tuple(list_inputs), (), rng, max_depth, allow_recursion)
 
 
@@ -635,13 +830,15 @@ def _replace_at_scoped(
     allow_recursion: bool = False,
     bias: ResonantBias | None = None,
     delta_p1: float = 0.15,
+    fold_bias: "ResonantBias | None" = None,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
     mirroring how :func:`_grow` would have built that subtree in the first
     place, so a mutation that introduces e.g. a fresh ``Recur`` call has a
     real chance of being well-scoped rather than an (safely, but uselessly)
-    unbound-name penalty."""
+    unbound-name penalty. ``fold_bias`` mirrors ``bias`` for
+    :func:`_fold_template` - see :func:`random_program`'s docstring."""
     idx = counter[0]
     counter[0] += 1
     if idx == target_index:
@@ -649,6 +846,10 @@ def _replace_at_scoped(
             template, _choices = _recursive_template(inputs, list_inputs, rng, bias, delta_p1)
             if template is not None:
                 return template
+        if list_inputs and template_rate > 0 and rng.random() < template_rate:
+            fold_node, _fold_choices = _fold_template(list_inputs, rng, fold_bias)
+            if fold_node is not None:
+                return fold_node
         return _grow(inputs, list_inputs, recur_ctx, rng, max(1, max_depth - 1), allow_recursion)
 
     scalars = [n for n in inputs if n not in list_inputs]
@@ -657,6 +858,7 @@ def _replace_at_scoped(
         "allow_recursion": allow_recursion,
         "bias": bias,
         "delta_p1": delta_p1,
+        "fold_bias": fold_bias,
     }
 
     if isinstance(node, Let):
@@ -734,6 +936,7 @@ def mutate(
     allow_recursion: bool = False,
     bias: ResonantBias | None = None,
     delta_p1: float = 0.15,
+    fold_bias: "ResonantBias | None" = None,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring).
@@ -756,11 +959,20 @@ def mutate(
     :data:`_TEMPLATE_HOLE_MUTATION_RATE`'s comment). Falling through at the
     complementary probability lets both mechanisms coexist instead of one
     eating the other.
+
+    The same split applies, independently, to the fold template
+    (:data:`_FOLD_TEMPLATE_HOLE_MUTATION_RATE`, :func:`_mutate_fold_template_hole`)
+    when ``node`` is ``Fold``-shaped - not gated on ``allow_recursion``, since
+    fold synthesis is orthogonal to recursion synthesis.
     """
     if allow_recursion and rng.random() < _TEMPLATE_HOLE_MUTATION_RATE:
         hole_mutated = _mutate_template_hole(node, rng, bias)
         if hole_mutated is not None:
             return hole_mutated
+    if isinstance(node, Fold) and rng.random() < _FOLD_TEMPLATE_HOLE_MUTATION_RATE:
+        fold_hole_mutated = _mutate_fold_template_hole(node, rng, fold_bias)
+        if fold_hole_mutated is not None:
+            return fold_hole_mutated
     n = count_nodes(node)
     target = int(rng.integers(0, n))
     return _replace_at_scoped(
@@ -776,6 +988,7 @@ def mutate(
         allow_recursion=allow_recursion,
         bias=bias,
         delta_p1=delta_p1,
+        fold_bias=fold_bias,
     )
 
 
@@ -935,12 +1148,16 @@ def synthesize(
     if allow_recursion and resonant_bias:
         bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
         bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
+    fold_bias: ResonantBias | None = None
+    if list_inputs and resonant_bias:
+        fold_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+        fold_bias = ResonantBias(fold_bias_codebook, FOLD_TEMPLATE_CATEGORIES)
 
     delta_p1 = delta_p1_start
     stagnation = 0
     restart_threshold = max(1, int(max_generations * _RESTART_STAGNATION_FRACTION))
     population = [
-        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1)
+        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias)
         for _ in range(population_size)
     ]
 
@@ -949,6 +1166,8 @@ def synthesize(
     attempt_best_energy = float("inf")
     best_template_node: dict[tuple[str, str], Node] = {}
     best_template_energy: dict[tuple[str, str], float] = {}
+    best_fold_template_node: dict[tuple[str, str], Node] = {}
+    best_fold_template_energy: dict[tuple[str, str], float] = {}
     beta = beta_start
     beta_trace: list[float] = []
 
@@ -1029,13 +1248,20 @@ def synthesize(
             if allow_recursion and resonant_bias:
                 bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
                 bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
+            if list_inputs and resonant_bias:
+                fold_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+                fold_bias = ResonantBias(fold_bias_codebook, FOLD_TEMPLATE_CATEGORIES)
             delta_p1 = delta_p1_start
             population = [
-                random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1)
+                random_program(
+                    inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias
+                )
                 for _ in range(population_size)
             ]
             best_template_node = {}
             best_template_energy = {}
+            best_fold_template_node = {}
+            best_fold_template_energy = {}
             attempt_best_energy = float("inf")
             stagnation = 0
             # beta is deliberately left untouched, not reset to beta_start:
@@ -1056,6 +1282,11 @@ def synthesize(
                 choices = extract_template_choices(p)
                 if choices is not None:
                     bias.reinforce(choices, weight=float(np.exp(-e)))
+        if fold_bias is not None:
+            for p, e in zip(population, raw_energies):
+                fold_choices = extract_fold_template_choices(p)
+                if fold_choices is not None:
+                    fold_bias.reinforce(fold_choices, weight=float(np.exp(-e)))
 
         # Template elitism: track the best template-shaped individual *per
         # structural family* (combine_kind, base_kind), not one single best
@@ -1082,6 +1313,21 @@ def synthesize(
                 if e < best_template_energy.get(key, float("inf")) - 1e-9:
                     best_template_energy[key] = float(e)
                     best_template_node[key] = p
+
+        # Fold-template elitism, mirroring the recursion elitism above
+        # exactly (same "one family locking out a sibling family" failure
+        # mode is possible here too - a fold that happens to hit a
+        # zero-mismatch coincidence on "*"/"square" should not be able to
+        # starve "+"/"identity" out of its own protected slot).
+        if list_inputs:
+            for p, e in zip(population, raw_energies):
+                fold_choices = extract_fold_template_choices(p)
+                if fold_choices is None:
+                    continue
+                fold_key = (fold_choices["combine_op"], fold_choices["item_kind"])
+                if e < best_fold_template_energy.get(fold_key, float("inf")) - 1e-9:
+                    best_fold_template_energy[fold_key] = float(e)
+                    best_fold_template_node[fold_key] = p
 
         sizes = np.array([count_nodes(p) for p in population], dtype=float)
         selection_energies = raw_energies + parsimony * sizes
@@ -1119,9 +1365,24 @@ def synthesize(
             for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
                 refined = mutate(
                     template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
-                    delta_p1,
+                    delta_p1, fold_bias,
                 )
                 next_population.append(refined)
+        for fold_template_node in best_fold_template_node.values():
+            if fold_template_node is population[idx_best] or len(next_population) >= population_size:
+                continue
+            next_population.append(fold_template_node)
+            # Same guaranteed-offspring reasoning as the recursion elitism
+            # above: a protected slot alone doesn't refine anything, since
+            # fitness-proportionate selection gives a mediocre fold template
+            # near-zero probability of ever being chosen as a parent once a
+            # lower-energy competitor exists.
+            for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
+                fold_refined = mutate(
+                    fold_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
+                    delta_p1, fold_bias,
+                )
+                next_population.append(fold_refined)
         while len(next_population) < population_size:
             i, j = rng.choice(len(population), size=2, p=np.asarray(probs))
             if rng.random() < 0.5:
@@ -1129,7 +1390,7 @@ def synthesize(
             else:
                 child = mutate(
                     population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
-                    delta_p1,
+                    delta_p1, fold_bias,
                 )
             next_population.append(child)
         population = next_population

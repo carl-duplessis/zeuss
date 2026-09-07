@@ -435,6 +435,38 @@ def test_synthesize_recovers_list_sum_via_fold():
         assert evaluate(best, {"xs": xs}, Fuel(500)) == sum(xs)
 
 
+def test_synthesize_recovers_sum_of_squares_via_fold():
+    """The list-op counterpart of ``test_resonant_bias_can_discover_genuine_
+    recursion``: a fold shape the search could not reliably find at all
+    before search.py grew a fold template. The v0.22 audit (docs/ROADMAP.md)
+    measured this target at 3/8 seeds, and *worse* with a larger budget
+    (1/8) - a parsimony-pressure explanation was tested and refuted, leaving
+    it an open capability limit. v0.24 added ``_fold_template`` (the
+    ``Fold``-shape counterpart to ``_recursive_template`` -
+    ``acc COMBINE_OP transform(item)`` with a resonance-biased ``cmp``/
+    ``const`` for the comparison-transform case), and it fixed this
+    target outright: 8/8 across the same seed sweep, each converging in a
+    handful of generations, since the correct structure is now a direct
+    template match rather something ordinary blind growth had to stumble
+    onto.
+    """
+    rng = np.random.default_rng(1)
+    examples = [
+        Example({"xs": [1, 2, 3]}, 14),
+        Example({"xs": [4, 5]}, 41),
+        Example({"xs": [10]}, 100),
+        Example({"xs": []}, 0),
+        Example({"xs": [-1, -2]}, 5),
+        Example({"xs": [0, 0, 0]}, 0),
+    ]
+    best, _trace, verified = synthesize(
+        ["xs"], examples, list_inputs=("xs",), population_size=300, max_generations=100, max_depth=3, rng=rng
+    )
+    assert verified
+    for xs in ([1, 1, 1, 1], [3, -3], [], [7], [2, 2, 2]):
+        assert evaluate(best, {"xs": xs}, Fuel(500)) == sum(x * x for x in xs)
+
+
 def test_synthesize_recovers_length():
     rng = np.random.default_rng(0)
     examples = [
@@ -539,6 +571,12 @@ def test_list_ops_are_reliable_across_seeds():
     that matched every training example and still diverged on held-out data
     (see ``synth.py``'s honesty statement: ``verified`` means "matched the
     given examples", never "proven correct").
+
+    ``sum_of_squares_via_fold`` was added later (v0.24, after the fold
+    template) rather than at audit time - it's the one target the audit's
+    own initial fix attempt didn't touch, since fixing it needed a genuine
+    structural addition, not an example-set or budget change (see its own
+    committed test's docstring).
     """
     cases = [
         (
@@ -582,6 +620,17 @@ def test_list_ops_are_reliable_across_seeds():
             dict(population_size=300, max_generations=100, max_depth=2),
             ([42, 1, 2], [100]),
             lambda xs: xs[0],
+        ),
+        (
+            "sum_of_squares_via_fold",
+            [
+                Example({"xs": [1, 2, 3]}, 14), Example({"xs": [4, 5]}, 41),
+                Example({"xs": [10]}, 100), Example({"xs": []}, 0),
+                Example({"xs": [-1, -2]}, 5), Example({"xs": [0, 0, 0]}, 0),
+            ],
+            dict(population_size=300, max_generations=100, max_depth=3),
+            ([1, 1, 1, 1], [3, -3], [], [7], [2, 2, 2]),
+            lambda xs: sum(x * x for x in xs),
         ),
     ]
     for name, examples, kwargs, held_out, expected_fn in cases:
