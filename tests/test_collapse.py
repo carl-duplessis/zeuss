@@ -12,6 +12,7 @@ from zeuss.tier2_substrate.collapse import (
     entropy,
     participation_ratio,
     softmax,
+    train_codebook,
 )
 from zeuss.tier2_substrate.hypervectors import Codebook, bundle, encode_record, random_hypervector, unbind
 
@@ -198,3 +199,72 @@ def test_dimensional_collapse_k_live_shrinks_along_cooling_schedule():
 
     assert k_live_trace[0] >= k_live_trace[-1]
     assert k_live_trace[-1] == 1
+
+
+def _low_dim_codebook_and_records(seed):
+    """A dimensionality-constrained regime (dim=12 for 24 symbols) where
+    bundling 5 role/filler pairs into one record creates real interference -
+    unlike a single isolated bind/unbind pair, which is exactly invertible
+    regardless of dimension and gives train_codebook nothing to fix."""
+    dim = 12
+    cb = Codebook(dim=dim, seed=0)
+    names = [f"s{i}" for i in range(24)]
+    for n in names:
+        cb.symbol(n)
+    rng = np.random.default_rng(seed)
+    records = []
+    for _ in range(15):
+        chosen = rng.choice(names, size=10, replace=False)
+        roles, fillers = chosen[:5], chosen[5:]
+        records.append(list(zip(roles.tolist(), fillers.tolist())))
+    return cb, records
+
+
+def _bundled_recovery_accuracy(codebook, records):
+    correct = total = 0
+    for rec in records:
+        record_vec = encode_record(codebook, rec)
+        for role, filler in rec:
+            probe = unbind(record_vec, codebook.symbol(role))
+            winner, _ = codebook.cleanup(probe)
+            correct += int(winner == filler)
+            total += 1
+    return correct / total
+
+
+def test_train_codebook_requires_jax_backend():
+    if HAS_JAX:
+        pytest.skip("this environment's active backend is already JAX")
+    cb, records = _low_dim_codebook_and_records(seed=2)
+    with pytest.raises(RuntimeError):
+        train_codebook(cb, records, steps=1)
+
+
+def test_train_codebook_keeps_symbols_unit_modulus():
+    pytest.importorskip("jax")
+    if not HAS_JAX:
+        pytest.skip("jax is importable but not the active backend")
+    cb, records = _low_dim_codebook_and_records(seed=2)
+    train_codebook(cb, records, steps=5)
+    mags = np.abs(np.asarray(cb.matrix()))
+    assert np.allclose(mags, 1.0, atol=1e-5)
+
+
+def test_train_codebook_improves_bundled_recovery_accuracy():
+    """The genuine "structure self-organises" claim: in a dimensionality-
+    constrained regime, a bundled record's interference makes many role/
+    filler pairs unrecoverable from a random codebook (measured, not
+    assumed) - training must measurably fix that, not just report a lower
+    loss number."""
+    pytest.importorskip("jax")
+    if not HAS_JAX:
+        pytest.skip("jax is importable but not the active backend")
+    cb, records = _low_dim_codebook_and_records(seed=2)
+    acc_before = _bundled_recovery_accuracy(cb, records)
+
+    losses = train_codebook(cb, records, steps=150, learning_rate=0.5)
+
+    acc_after = _bundled_recovery_accuracy(cb, records)
+    assert acc_before < 0.8  # genuinely imperfect before training, not a strawman
+    assert acc_after == 1.0  # training resolves every example
+    assert losses[-1] < losses[0]
