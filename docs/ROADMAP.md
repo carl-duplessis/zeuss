@@ -418,6 +418,21 @@
       wrong or silently fine), the same dimension-vs-bundle-size tradeoff
       already documented for `collapse.train_codebook`.
 
+## v0.19 — entropy-vs-beta / energy-vs-step visualisation
+- [x] `demos/experiment_entropy_energy.py`: a good-first-task from
+      `CLAUDE.md`, now removed from that list. A standalone script (guarded
+      `matplotlib` import, like every other optional dependency in this
+      project - not wired into `zeuss`'s core CLI, following `ask_demo.py`'s
+      precedent of standalone-but-not-CLI-wired demos) that plots the same
+      probe's Frontier 1 cooling schedule (entropy vs. beta, a fine
+      `geomspace(0.1, 64)` schedule instead of the 7-point schedule the text
+      demo prints) side by side with its Frontier 2 energy descent (energy
+      vs. step, deterministic vs. thermal, the same comparison
+      `demo_collapse.py` narrates as printed numbers) - one probe, one
+      landscape, two visual angles on the same continuous-to-discrete
+      crystallisation this project is about. Saves a PNG (gitignored, like
+      every other generated artifact) rather than opening a GUI window.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
