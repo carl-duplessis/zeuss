@@ -25,12 +25,24 @@ Each maps to a frontier from the vision:
 
 ## Quick start
 
+This repo already has a `.venv` at the project root with the `dev` and `jax`
+extras installed, so JAX is available and `ZEUSS_BACKEND=auto` picks it as the
+active backend by default (not just NumPy). Use it instead of system Python,
+or `pytest` will silently skip every JAX-gated test:
+
 ```bash
 # from the project root (this folder)
-python -m pip install -e ".[dev]"     # editable install + test deps
-python -m zeuss info                  # backend / capability report
+.venv\Scripts\activate                # Windows; source .venv/bin/activate on Linux/macOS
+python -m zeuss info                  # backend / capability report - confirm JAX is active
 python -m zeuss demo                  # run the collapse demo
-pytest -q                             # 17 tests, CPU-only
+pytest -q                             # full suite, JAX-backed tests included
+```
+
+Setting up a fresh environment instead:
+
+```bash
+python -m pip install -e ".[dev,jax]"  # editable install + test deps + JAX
+pytest -q                              # CPU-only (NumPy) if JAX isn't installed
 ```
 
 No install needed to try it:
