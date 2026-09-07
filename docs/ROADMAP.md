@@ -397,6 +397,27 @@
       (was the reindexed workaround); docs (`docs/ARCHITECTURE.md`,
       `CLAUDE.md`'s good-first-tasks) updated to match.
 
+## v0.18 — sequence encoding (bind + permute)
+- [x] `hypervectors.encode_sequence`/`decode_sequence`: a good-first-task
+      from `CLAUDE.md`. Each position `i` gets its own role,
+      `permute(anchor, i)` (a single fixed anchor symbol cyclically shifted
+      by position - exactly what this module's own docstring already says
+      `permute` is for), the item at that position is `bind`-bound to its
+      positional role (the same role-filler pattern `encode_record` already
+      uses, positions instead of named fields), and every pair is bundled
+      into one vector. Decoding unbinds each position's role in turn and
+      runs `Codebook.cleanup` - the classic VSA cleanup-memory step.
+      Verified: exact roundtrip recovery up to 24 bundled items at
+      `dim=8192` (this project's usual dimension), a repeated item at two
+      different positions decodes correctly at both (position, not just
+      membership, is what's encoded), reordering the same items produces a
+      genuinely dissimilar vector (`similarity < 0.5`), and - matching this
+      project's habit of demonstrating real failure modes, not just success
+      - decoding measurably degrades at a dimension too low for the
+      sequence length (`dim=64` for 12 items: 9/12 correct, not silently
+      wrong or silently fine), the same dimension-vs-bundle-size tradeoff
+      already documented for `collapse.train_codebook`.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

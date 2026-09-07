@@ -4,7 +4,9 @@ from zeuss.tier2_substrate.hypervectors import (
     Codebook,
     bind,
     bundle,
+    decode_sequence,
     encode_record,
+    encode_sequence,
     permute,
     random_hypervector,
     similarity,
@@ -54,3 +56,74 @@ def test_encode_record_roundtrip():
     name, sim = cb.cleanup(colour)
     assert name == "red"
     assert sim > 0.2
+
+
+def _codebook_with_vocab(seed, n=30):
+    cb = Codebook(dim=8192, seed=seed)
+    vocab = [f"w{i}" for i in range(n)]
+    for w in vocab:
+        cb.symbol(w)
+    return cb, vocab
+
+
+def test_encode_sequence_roundtrip_recovers_every_position():
+    cb, vocab = _codebook_with_vocab(seed=0)
+    rng = np.random.default_rng(1)
+    seq = [rng.choice(vocab) for _ in range(6)]
+
+    enc = encode_sequence(cb, seq)
+    decoded = decode_sequence(cb, enc, len(seq))
+
+    assert [name for name, _sim in decoded] == seq
+    assert all(sim > 0.2 for _name, sim in decoded)
+
+
+def test_encode_sequence_handles_a_repeated_item_at_different_positions():
+    """The same item appearing at two positions must decode correctly at
+    both - each position has its own quasi-orthogonal role, so a repeat
+    isn't a degenerate case the way it would be for a plain unordered bundle."""
+    cb, _vocab = _codebook_with_vocab(seed=0)
+    seq = ["w3", "w7", "w3", "w9"]
+
+    enc = encode_sequence(cb, seq)
+    decoded = decode_sequence(cb, enc, len(seq))
+
+    assert [name for name, _sim in decoded] == seq
+
+
+def test_encode_sequence_is_order_sensitive():
+    """Same items, different order, must produce a genuinely different
+    vector - position is encoded, not just membership (unlike a plain bundle,
+    which is order-blind by construction)."""
+    cb, _vocab = _codebook_with_vocab(seed=0)
+    enc_forward = encode_sequence(cb, ["w1", "w2", "w3"])
+    enc_reversed = encode_sequence(cb, ["w3", "w2", "w1"])
+    assert similarity(enc_forward, enc_reversed) < 0.5
+
+
+def test_decode_sequence_degrades_at_low_dimension():
+    """Decoding is reliable at this project's usual dimension, but genuinely
+    degrades - not silently - once dimensionality is too low relative to how
+    many items are bundled into one sequence, the same honest
+    dimension-vs-bundle-size tradeoff documented for train_codebook."""
+    n = 12
+    rng = np.random.default_rng(2)
+    vocab = [f"w{i}" for i in range(n + 5)]
+
+    cb_high = Codebook(dim=8192, seed=0)
+    for w in vocab:
+        cb_high.symbol(w)
+    seq = [rng.choice(vocab) for _ in range(n)]
+    enc_high = encode_sequence(cb_high, seq)
+    decoded_high = decode_sequence(cb_high, enc_high, n)
+    correct_high = sum(1 for (name, _sim), orig in zip(decoded_high, seq) if name == orig)
+
+    cb_low = Codebook(dim=64, seed=0)
+    for w in vocab:
+        cb_low.symbol(w)
+    enc_low = encode_sequence(cb_low, seq)
+    decoded_low = decode_sequence(cb_low, enc_low, n)
+    correct_low = sum(1 for (name, _sim), orig in zip(decoded_low, seq) if name == orig)
+
+    assert correct_high == n  # reliable at this project's usual dimension
+    assert correct_low < n  # genuinely, measurably worse at dim=64

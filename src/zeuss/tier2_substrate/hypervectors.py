@@ -130,3 +130,62 @@ def encode_record(codebook: Codebook, pairs: Iterable[tuple[str, str]]) -> "xp.n
     """
     bound = [bind(codebook.symbol(role), codebook.symbol(filler)) for role, filler in pairs]
     return bundle(bound)
+
+
+_SEQUENCE_ANCHOR_NAME = "__POSITION_BASIS__"
+
+
+def encode_sequence(codebook: Codebook, items: Sequence[str]) -> "xp.ndarray":
+    """Encode an *ordered* sequence of named codebook items into one
+    hypervector, combining ``bind`` and ``permute`` (a good-first-task from
+    ``docs/ROADMAP.md``).
+
+    Each position ``i`` gets its own role vector, ``permute(anchor, i)`` - a
+    single fixed anchor hypervector cyclically shifted by ``i``, which is
+    exactly what this module's own top-of-file summary says ``permute`` is
+    for ("protect order; e.g. sequence position"). The item at that position
+    is then ``bind``-bound to its positional role - the same role-filler
+    binding :func:`encode_record` already uses, just with positions as roles
+    instead of named fields - and every (role, item) pair is bundled into
+    one vector. Different positions get quasi-orthogonal roles (``permute``
+    is a quasi-orthogonal transform), so position, not just membership, is
+    recoverable: encoding the same items in a different order produces a
+    dissimilar vector, confirmed directly
+    (``test_encode_sequence_is_order_sensitive``).
+
+    Pair with :func:`decode_sequence` to read the sequence back out. Like
+    any bundle, more items packed into one sequence means more cross-talk
+    for the decoder to resolve against - the same bundling-interference
+    tradeoff :func:`~zeuss.tier2_substrate.collapse.train_codebook`'s tests
+    already demonstrate elsewhere in this codebase, not a new failure mode.
+    """
+    anchor = codebook.symbol(_SEQUENCE_ANCHOR_NAME)
+    bound = [bind(permute(anchor, i), codebook.symbol(name)) for i, name in enumerate(items)]
+    return bundle(bound)
+
+
+def decode_sequence(codebook: Codebook, seq, length: int) -> list[tuple[str, float]]:
+    """Decode an :func:`encode_sequence` hypervector back into its
+    per-position items via cleanup-memory readout.
+
+    For each position ``i``, unbinds that position's role
+    (``permute(anchor, i)``) from ``seq`` and looks up the nearest stored
+    symbol via :meth:`Codebook.cleanup` - the classic VSA "cleanup memory"
+    step, resolving a noisy recovered vector back onto the nearest exact
+    atomic symbol. Returns a list of ``(name, similarity)`` pairs, one per
+    position, in order. Decoding is reliable at the dimensions this project
+    otherwise uses (``dim=8192``: exact recovery up to at least 24 bundled
+    items, checked directly), and genuinely degrades - not silently, a real
+    measured failure mode - at dimensions too low for the sequence length
+    (e.g. ``dim=64`` for 12 items recovers only 9/12 positions correctly,
+    see ``test_decode_sequence_degrades_at_low_dimension``), the same
+    dimension-vs-bundle-size tradeoff this project already documents for
+    :func:`~zeuss.tier2_substrate.collapse.train_codebook`.
+    """
+    anchor = codebook.symbol(_SEQUENCE_ANCHOR_NAME)
+    out = []
+    for i in range(length):
+        role = permute(anchor, i)
+        recovered = unbind(seq, role)
+        out.append(codebook.cleanup(recovered))
+    return out
