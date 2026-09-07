@@ -955,9 +955,27 @@ def synthesize(
     for _generation in range(max_generations):
         raw_energies = np.array([program_energy(p, examples, fuel_budget) for p in population])
         idx_best = int(np.argmin(raw_energies))
-        if raw_energies[idx_best] < best_energy - 1e-9:
-            best_energy = float(raw_energies[idx_best])
-            best_node = population[idx_best]
+        # Occam tie-break on the *reported* winner only. `idx_best` itself is
+        # left as plain argmin because it also drives the elitism slot below;
+        # choosing a different tied individual there would perturb the search
+        # dynamics rather than isolate this effect (measured: doing so just
+        # shuffled which seeds fail, 19/64 -> 18/64, i.e. noise).
+        min_energy = float(np.min(raw_energies))
+        tied = np.flatnonzero(raw_energies <= min_energy + 1e-9)
+        idx_report = int(min(tied, key=lambda i: count_nodes(population[i])))
+        # Among programs tied at the best energy, prefer the smallest, and let
+        # a later equal-energy-but-smaller candidate replace the recorded best
+        # (strictly-better-energy alone freezes the first winner forever).
+        # Targets the audit's most common failure shape: a program matching
+        # every training example that still diverges on held-out input - the
+        # coincidental solutions are large nested trees, the genuine ones are
+        # small (docs/ROADMAP.md v0.22).
+        if raw_energies[idx_report] < best_energy - 1e-9 or (
+            abs(raw_energies[idx_report] - best_energy) <= 1e-9
+            and count_nodes(population[idx_report]) < count_nodes(best_node)
+        ):
+            best_energy = float(raw_energies[idx_report])
+            best_node = population[idx_report]
         if raw_energies[idx_best] < attempt_best_energy - 1e-9:
             attempt_best_energy = float(raw_energies[idx_best])
             stagnation = 0

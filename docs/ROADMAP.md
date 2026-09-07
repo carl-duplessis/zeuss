@@ -726,6 +726,49 @@
         answer for this one target specifically, but is no longer justified
         by the other failures, which turned out to have simpler causes.
 
+## v0.23 — Occam tie-break on the reported winner
+- [x] Followed up v0.22's leftovers. Diagnosed `sum_via_fold` seed 3 (the
+      one committed list-op target still at 7/8) rather than leaving it
+      unexplained: it converges to energy 20.0 on an `Index`/`Map`
+      expression that is not even a `Fold`, and burns all 100 generations
+      there, while seed 0 finds the answer at generation 8. A larger budget
+      does fix seed 3 - but then seed 4 "verifies" on a wrong program
+      instead, and adding examples to fix *that* moves the failure to seed
+      6, then to seeds 0 and 7. Chasing it further would mean adding
+      examples until this particular held-out set passes, which is fitting
+      the test, not fixing the search - the anti-pattern v0.16 and v0.20
+      both recorded. `sum_via_fold` stays 7/8 by choice.
+- [x] That diagnosis did surface a general signal worth acting on. The
+      coincidental, verified-but-wrong `sum` programs are *large* (deeply
+      nested double `Fold`s with dead `If` branches), while the genuine
+      solution is a small `Fold(xs, 0, acc, item, acc + item)`. `synthesize`
+      recorded the first individual to reach the best energy and never
+      replaced it with an equally-good smaller one, even though `parsimony`
+      already encodes "smaller generalises better" for *selection*. Added an
+      Occam tie-break: among everything tied at the best energy, report the
+      smallest, and let a later equal-energy-but-smaller candidate replace
+      the recorded best.
+- [x] First implementation was **confounded and thrown away**, worth
+      recording since the failure is instructive: it also changed
+      `idx_best`, which drives the elitism slot, so it perturbed the search
+      dynamics rather than isolating the effect - the sweep came back
+      19/64 -> 18/64 with the *failing seeds shuffled*, the signature of
+      noise, not improvement. Re-implemented so `idx_best` stays plain
+      `argmin` for elitism and only the reported winner uses the tie-break.
+- [x] Clean result: 19/64 -> **18/64 with the failure set otherwise
+      identical to baseline** - no shuffling, no regressions, one genuine
+      fix (`filter_positives` seed 3, previously verified-but-wrong). The
+      honest size of this effect is one run in sixty-four: it is a cheap,
+      principled improvement that can only ever change which of several
+      equally-good programs is returned, not a fix for the remaining gaps.
+      Full suite 102 passed, 10 skipped, ~68s, unchanged; recursion seed
+      sweep unchanged.
+- [ ] `sum_of_squares_via_fold` (3/8, and worse with more budget - see
+      v0.22, where a parsimony explanation was tested and refuted) remains
+      the one target where a genuine structural-template mechanism for fold
+      shapes still looks like the right answer, now that the cheaper causes
+      elsewhere have been ruled out.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
