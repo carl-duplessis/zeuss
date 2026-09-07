@@ -382,6 +382,24 @@ _TUNABLE_HOLES = ("cmp", "base_const", "base_val", "op", "step")
 # just the protected elite slot itself.
 _TEMPLATE_REFINEMENT_OFFSPRING = 8
 
+# Share of the *run's own* max_generations budget an attempt can spend with
+# zero improvement to its own best energy before synthesize() discards the
+# whole population and starts a fresh one (see the "Random restart" comment
+# in synthesize() for the full rationale) - a fraction of max_generations,
+# not a fixed generation count, because a fixed count is a trap: a first cut
+# at this used a flat 40, which seemed safely above what a "genuinely
+# progressing" search should ever need - but measuring it against seed 1
+# (previously reliable) found that assumption false. That seed's low wall-
+# clock time in earlier sweeps was cheap-per-generation cost, not an early
+# finish - it actually uses the *entire* 150-generation budget, including
+# stretches well past 40 generations with no improvement, as a normal part
+# of succeeding. A fixed 40 restarted it mid-convergence and lost the run
+# entirely. Tying this to a fraction of whatever budget the caller actually
+# gave means a long stagnation stretch is only ever judged "too long"
+# relative to how much runway this call has to offer, not against a number
+# tuned for one specific max_generations value.
+_RESTART_STAGNATION_FRACTION = 0.6
+
 # Probability that mutate() takes the surgical single-hole path on a
 # template-shaped individual instead of falling through to full scoped
 # regrowth. Must stay < 1: hole mutation only ever changes one field at a
@@ -920,6 +938,7 @@ def synthesize(
 
     delta_p1 = delta_p1_start
     stagnation = 0
+    restart_threshold = max(1, int(max_generations * _RESTART_STAGNATION_FRACTION))
     population = [
         random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1)
         for _ in range(population_size)
@@ -927,6 +946,7 @@ def synthesize(
 
     best_node: Node = population[0]
     best_energy = float("inf")
+    attempt_best_energy = float("inf")
     best_template_node: dict[tuple[str, str], Node] = {}
     best_template_energy: dict[tuple[str, str], float] = {}
     beta = beta_start
@@ -938,6 +958,8 @@ def synthesize(
         if raw_energies[idx_best] < best_energy - 1e-9:
             best_energy = float(raw_energies[idx_best])
             best_node = population[idx_best]
+        if raw_energies[idx_best] < attempt_best_energy - 1e-9:
+            attempt_best_energy = float(raw_energies[idx_best])
             stagnation = 0
         else:
             stagnation += 1
@@ -945,6 +967,71 @@ def synthesize(
         beta_trace.append(beta)
         if best_energy <= 1e-9:
             break
+
+        # Random restart: five different in-population diversity mechanisms
+        # were tried and confirmed (by instrumenting real runs, not just
+        # reasoning about it) to be unable to rescue a population that has
+        # genuinely converged on a fitness plateau below the target - the
+        # documented seed-8 regression (docs/ROADMAP.md v0.20). Reweighting
+        # selection (a lower/adaptive hole-mutation rate, fitness sharing
+        # over structural niches) can't touch it once beta has collapsed
+        # softmax to exact 0/1 for the losing side; unprotected fresh
+        # individuals (random immigrants, biased or not) can't survive
+        # selection long enough to matter; and even faithfully reproducing
+        # the one historically-confirmed working combination (hole-mutation
+        # forced to full regrowth *and* elitism dropped) scoped per-family
+        # still left every family frozen at the same energy for the rest of
+        # a 150-generation budget. All five of those try to fix the *current*
+        # population from within. This instead treats "no improvement in this
+        # attempt for a long time" as a signal that this population's
+        # lineage is not worth rescuing at all, and throws the whole thing
+        # away for a genuinely independent one - not another perturbation of
+        # the same stuck gene pool, its structural-family records, and its
+        # (by now probably corrupted-toward-the-plateau) ResonantBias prior.
+        # This is intentionally indifferent to *why* a population is stuck:
+        # unlike the five mechanisms above, it doesn't depend on the failure
+        # being selection-side, population-side, or anything else in
+        # particular, so it should generalize to failure modes this project
+        # hasn't seen yet, not just seed 8's specific one. `stagnation` only
+        # crosses this threshold after an attempt has made *zero* improvement
+        # for _RESTART_STAGNATION_FRACTION of the *entire* budget - measured
+        # directly against seed 1 (see that constant's comment): a
+        # genuinely-progressing search can still have long stagnation
+        # stretches as a normal part of succeeding, so this only fires once
+        # most of the available runway is already spent going nowhere.
+        # Consumes generations from the same overall `max_generations` budget
+        # rather than adding to it - a stuck run previously burned its whole
+        # remaining budget doing nothing after converging early; now it
+        # spends that same budget on independent attempts instead of one
+        # frozen one, which can only help. `best_energy`/`best_node` (the
+        # function's eventual answer) are deliberately *not* reset here -
+        # they track the best ever seen across every attempt, not just the
+        # current one.
+        if stagnation >= restart_threshold:
+            if allow_recursion and resonant_bias:
+                bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+                bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
+            delta_p1 = delta_p1_start
+            population = [
+                random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1)
+                for _ in range(population_size)
+            ]
+            best_template_node = {}
+            best_template_energy = {}
+            attempt_best_energy = float("inf")
+            stagnation = 0
+            # beta is deliberately left untouched, not reset to beta_start:
+            # selection pressure rising monotonically across the *whole* call
+            # is an existing invariant elsewhere in this module
+            # (test_selection_pressure_rises_across_generations) - resetting
+            # it here would mean a restart generation's beta_trace entry
+            # drops below the previous one, breaking that invariant for any
+            # caller with a small enough budget for restarts to kick in
+            # (confirmed by that exact test failing when this reset raw
+            # beta_start). A fresh population still gets fresh
+            # crossover/mutation diversity regardless of what beta currently
+            # is; it doesn't need a fresh annealing schedule too.
+            continue
 
         if bias is not None:
             for p, e in zip(population, raw_energies):

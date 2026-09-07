@@ -504,6 +504,113 @@
 - [x] `CLAUDE.md`'s good-first-tasks entry for this (open since v0.17)
       removed - no longer an open item.
 
+## v0.21 — random restarts for the seed-8 plateau (five dead ends first)
+- [x] Followed up on v0.20's seed-8 gap with a real attempt to fix it, not
+      just re-document it. Tried five different in-population diversity
+      mechanisms in turn, each one confirmed dead by instrumenting a real
+      run against seed 8, not just by reasoning about it:
+      1. A per-family stagnation-adaptive `_TEMPLATE_HOLE_MUTATION_RATE`
+         (decaying toward a floor once a family's own energy stalls) -
+         fixed nothing (seed 8 still failed to verify) and broke
+         `test_resonant_bias_can_discover_fibonacci` (seed 1) plus two more
+         seeds not in the committed set - the same whack-a-mole shape as
+         v0.20's static-0.2 attempt, just smoother.
+      2. Fitness sharing (Goldberg & Richardson) over structural niches -
+         dividing each individual's selection weight by its niche's
+         population before renormalizing. Confirmed mathematically inert at
+         the beta this module reaches: once `beta` grows large enough,
+         `exp(-beta*e)` for the losing niche underflows to exact `0.0` in
+         float64, and dividing/renormalizing an exact zero is still zero -
+         no information survives for sharing to redistribute. Zero effect on
+         seed 8, and separately regressed
+         `test_resonant_bias_can_discover_zero_indexed_fibonacci` (seed 0).
+      3. Random immigrants - injecting fresh `random_program()` draws (bias
+         and unbiased both tried) into the reproduction loop once stagnant.
+         No effect at all: a lone fresh individual has no path to matter
+         once an incumbent is established - unless it beats the incumbent
+         outright on its first draw, it has near-zero selection probability
+         at this module's high late-run `beta` and vanishes within a
+         generation, never getting the sustained protected refinement an
+         established lineage gets.
+      4. A per-family hard switch (not smooth decay) of
+         `_TEMPLATE_HOLE_MUTATION_RATE` to `0.0` once a family's own
+         stagnation crossed a threshold, elitism left untouched - still no
+         effect. Root cause: elitism's unconditional reinsertion of the same
+         frozen best-known individual every generation means its "full
+         regrowth" offspring are all one mutation away from that one fixed
+         point, not independent fresh draws - a genuinely fresh
+         `_recursive_template()` redraw only happens on the rare occasion a
+         mutation's randomly-chosen target is the tree's root, and even then
+         isn't scoped to land back in the same family.
+      5. The same per-family switch *plus* dropping that family's elitism
+         slot and guaranteed refinement entirely once stuck (the closest
+         possible per-family mirror of the one combination v0.20 confirmed
+         solved seed 8 at generation 50: global rate 0.0 + elitism
+         disabled). Instrumented trace showed all four families lapsing in
+         turn and, by generation 33, *every* family fully lapsed - full
+         regrowth everywhere, zero elitism anywhere - for the remaining
+         ~117 generations. Energy stayed frozen at exactly `1.000` the
+         entire time regardless. This was the most informative failure: it
+         means the fix doesn't decompose per-family, or the original
+         generation-50 solve was itself a lucky RNG path rather than a
+         reliable property of that configuration.
+- [x] The common thread in all five: each tries to rescue the *current*
+      population from within, which means each one's fix is coupled to
+      guessing the specific mechanism causing that population to be stuck.
+      Switched to a mechanism that's indifferent to *why* a population is
+      stuck: random restarts. Track `stagnation` against the *current
+      attempt's own* best energy (separate from the all-time
+      `best_energy`/`best_node`, which are never reset and always hold the
+      best found across every attempt); once an attempt spends
+      `_RESTART_STAGNATION_FRACTION` (0.6) of the *entire* `max_generations`
+      budget with zero improvement, discard the population, the per-family
+      elitism records, and the `ResonantBias` prior (which would otherwise
+      keep steering fresh draws back toward the stuck lineage's own
+      hole-filler values), and start over from a fresh random population -
+      spending the same overall budget on several independent attempts
+      instead of one that's already a lost cause.
+- [x] A fixed generation-count threshold was tried first (40) and found
+      unsafe: measuring it against seed 1 (previously reliable) showed that
+      seed's fast wall-clock time in earlier sweeps was cheap-per-generation
+      cost, not an early finish - it genuinely uses the full 150-generation
+      budget, including stretches well past 40 generations with zero
+      improvement, as a normal part of succeeding. The fixed threshold
+      restarted it mid-convergence and lost the run outright. Switched to a
+      fraction of the caller's own `max_generations` instead of an absolute
+      count, precisely because a genuinely-progressing search's "how long is
+      too long to wait" scales with how much budget it was given, not with
+      a number tuned for one specific `max_generations` value.
+- [x] A second regression found before landing: resetting `beta` to
+      `beta_start` on restart broke
+      `test_selection_pressure_rises_across_generations`, which asserts
+      `beta` rises monotonically across an entire call - a real, deliberate
+      invariant elsewhere in this module, not an incidental one. Fixed by
+      leaving `beta` untouched across a restart; a fresh population still
+      gets fresh crossover/mutation diversity regardless of what `beta`
+      currently is, and doesn't need a fresh annealing schedule too.
+- [x] Full seed sweep after both fixes, same configuration as v0.20's
+      (population=800, generations=150, fuel_budget=200):
+      `2**n` seeds 0-7 all verify and generalize, including seed 5 - a
+      silent, previously-undocumented gap (verified but non-generalizing)
+      this surfaced and fixed as a side effect, not something v0.20 knew
+      about. Seed 8 still doesn't verify - unchanged from v0.20's baseline,
+      not worse - now a case of "this particular target's true solution is
+      hard enough to need more than one 150-generation attempt to hit by
+      chance" rather than "permanently unreachable from this population."
+      Fibonacci seeds 0/1/4/7 and zero-indexed seed 0 all still verify and
+      generalize. Full suite green: 101 passed, 10 skipped, and the
+      committed reliability tests run in the same ~57-59s as before these
+      changes - confirming restarts never trigger on any currently-healthy
+      seed, exactly as designed.
+- [x] Honest status: seed 8 is not solved, but the mechanism addressing it
+      is now general rather than specific to seed 8's own failure signature
+      (unlike all five rejected attempts, which each depended on guessing
+      *why* a population was stuck). A future occurrence of "population
+      converges on a plateau below the target" in this search - on any
+      target, any seed, for any underlying reason - gets the same
+      independent-attempts treatment automatically, without needing its own
+      bespoke diagnosis first.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
