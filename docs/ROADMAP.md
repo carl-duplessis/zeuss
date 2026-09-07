@@ -99,7 +99,42 @@
 - [x] Compile a `Theory` directly into a Tier-2 `Landscape` and show that
       settling reproduces the theory's satisfying valuations
       (`tier3_logic/grounding.py`).
-- [ ] Probabilistic priors as temperature schedules.
+- [x] Probabilistic priors as temperature schedules: `compile_theory`/
+      `compile_theories` take an `inverse_temperature` (default `1.0`,
+      backward-compatible) scaling the Boltzmann weighting over Boolean
+      corners - low values keep a genuine, broad prior across every
+      near-satisfying corner, high values narrow it to only the theory's
+      exact zero-energy corner(s) (checked directly on the compiled
+      `Landscape`, not assumed). `anneal_theory` carries this across a
+      cooling schedule, Frontier 2's analogue of `collapse.anneal`: at each
+      `beta` it recompiles the theory and settles the running state into it
+      (same `beta` drives both the prior's breadth and how sharply settling
+      pulls - one temperature knob for both). A real, checked-not-assumed
+      finding along the way: entropy crystallises toward 0 even on a
+      genuinely *underdetermined* theory (several equally-satisfying
+      corners) - a single settling trajectory is one continuous state, so it
+      spontaneously breaks the symmetry and commits to *one* tied corner
+      (the same phenomenon a ferromagnet's mean-field descent shows,
+      picking one degenerate ground state rather than hovering between
+      them), not the "stays ambiguous" behaviour first assumed and then
+      disproved empirically. What's still verified true: the corner it
+      commits to is a genuinely satisfying one, not an arbitrary point.
+
+      Found and fixed a real, pre-existing calibration bug while verifying
+      readout confidence during this work (predates this roadmap item -
+      `valuation_to_hypervector`/`readout` are original v0.5 code): `FALSE`
+      was an independently-drawn codebook symbol rather than `TRUE`'s
+      literal phase-antipode, so even a single crisply-true variable with no
+      other variables bundled in topped out at `readout ~0.75`, not `1.0`,
+      and a 10-variable crisp corner read out at only `~0.57` - barely above
+      the `0.5` "unknown" baseline. Fixed by making `FALSE = -TRUE` (a
+      genuine opposite pole, matching this module's own "poles on the phase
+      torus" framing); the 1-variable case now reads out at exactly `1.0`
+      and the 10-variable case improves to `~0.64` (the remainder is honest
+      bundling interference - the same effect `train_codebook` already
+      demonstrated - not a calibration artifact). No other module referenced
+      the `:FALSE` symbol name directly, so this was a safe, self-contained
+      fix.
 
 ## v0.6 — liquid time-step dynamics (adaptive annealing)
 - [x] `energy.settle_adaptive`: step size scales with how much the previous

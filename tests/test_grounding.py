@@ -5,7 +5,14 @@ import pytest
 from zeuss.tier2_substrate.energy import settle
 from zeuss.tier2_substrate.hypervectors import Codebook, random_hypervector
 from zeuss.tier3_logic.compiler import Rule, Theory
-from zeuss.tier3_logic.grounding import InconsistentTheoriesError, compile_theories, compile_theory, readout
+from zeuss.tier3_logic.grounding import (
+    InconsistentTheoriesError,
+    anneal_theory,
+    compile_theories,
+    compile_theory,
+    readout,
+    valuation_to_hypervector,
+)
 
 
 def test_compile_theory_ground_state_matches_satisfying_valuation():
@@ -71,3 +78,76 @@ def test_compile_theories_raises_on_disagreement_instead_of_blending():
         compile_theories(codebook, theories, shared_vars)
 
     assert excinfo.value.violations == [("alice:door_open", "carol:door_open", 1.0)]
+
+
+def test_readout_reaches_near_certainty_for_an_isolated_crisp_variable():
+    """FALSE is now TRUE's exact phase-antipode (-true_pole), not an
+    independently-drawn codebook symbol - so a single crisply-true variable
+    (no other variables bundled in to dilute it) must read out at ~1.0, the
+    achievable ceiling the [-2,2]->[0,1] remap assumes. Before this fix,
+    false_sim was only ~0 (two merely-distinct random vectors), capping even
+    this best case at ~0.75."""
+    codebook = Codebook(dim=8192, seed=1)
+    z = valuation_to_hypervector(codebook, ["a"], {"a": 1.0})
+    out = readout(codebook, ["a"], z)
+    assert out["a"] > 0.999
+
+
+def test_compile_theory_inverse_temperature_narrows_the_live_corner_set():
+    """Low inverse_temperature keeps a genuine, broad prior (every corner
+    close to satisfying stays a live attractor); high inverse_temperature
+    sharpens it toward only the theory's exact zero-energy corners - the
+    core "temperature controls prior breadth" claim of the v0.5 roadmap
+    item, checked on the compiled Landscape itself before any settling
+    dynamics get involved."""
+    codebook = Codebook(dim=4096, seed=3)
+    theory = Theory(
+        rules=[Rule("a", "b", weight=1.0), Rule("b", "a", weight=1.0), Rule("bias", "a", weight=0.5)]
+    )
+    fixed = {"bias": 1.0}
+
+    low = compile_theory(codebook, theory, ["a", "b"], fixed=fixed, inverse_temperature=0.1)
+    high = compile_theory(codebook, theory, ["a", "b"], fixed=fixed, inverse_temperature=50.0)
+
+    assert len(low.attractors) == 4  # all four corners still above the weight floor
+    assert len(high.attractors) == 1  # only the theory's unique zero-energy corner survives
+    assert high.weights == [1.0]
+
+
+def test_anneal_theory_crystallises_toward_unique_ground_state():
+    """A theory with one unique lowest-energy corner (biconditional a<->b
+    plus a rule biasing a toward true) must have its annealed entropy drop
+    toward 0 and its final readout land on that corner, not just report a
+    lower energy number."""
+    codebook = Codebook(dim=4096, seed=3)
+    theory = Theory(
+        rules=[Rule("a", "b", weight=1.0), Rule("b", "a", weight=1.0), Rule("bias", "a", weight=0.5)]
+    )
+    fixed = {"bias": 1.0}
+    rng = np.random.default_rng(7)
+
+    _z_final, trace = anneal_theory(codebook, theory, ["a", "b"], fixed=fixed, rng=rng)
+
+    assert trace[0]["entropy_bits"] > trace[-1]["entropy_bits"]
+    assert trace[-1]["entropy_bits"] < 0.01
+    assert trace[-1]["readout"]["a"] > 0.7
+    assert trace[-1]["readout"]["b"] > 0.7
+    assert theory.energy({**trace[-1]["readout"], **fixed}) < 0.15
+
+
+def test_anneal_theory_settles_into_a_genuinely_satisfying_corner_even_when_degenerate():
+    """A genuinely underdetermined theory (a->b alone: three of four corners
+    equally satisfy it) still crystallises to ~0 entropy - a single settling
+    trajectory spontaneously breaks the symmetry and commits to *one*
+    corner, exactly as a ferromagnet's mean-field descent picks one
+    degenerate ground state rather than hovering between them. What must
+    hold is that the corner it commits to is a real, satisfying one, not an
+    arbitrary point."""
+    codebook = Codebook(dim=4096, seed=11)
+    theory = Theory(rules=[Rule("a", "b", weight=1.0)])
+    rng = np.random.default_rng(5)
+
+    _z_final, trace = anneal_theory(codebook, theory, ["a", "b"], rng=rng)
+
+    assert trace[-1]["entropy_bits"] < 0.01
+    assert theory.satisfied(trace[-1]["readout"], tol=0.2)
