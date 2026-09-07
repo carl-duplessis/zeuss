@@ -28,8 +28,25 @@
       picks it as the default backend (`ZEUSS_BACKEND=auto` prefers JAX when
       importable), so the full suite was re-verified with JAX genuinely
       active by default, not just via the forced-subprocess parity test.
-- [ ] `jit`/`vmap` batched collapse over many probes.
-- [ ] Property tests run on both backends.
+- [x] `jit`/`vmap` batched collapse over many probes: `collapse.collapse_batch`
+      (eager, either backend) resolves N probes in one vectorized pass
+      instead of a Python loop over `collapse()`, and `collapse_batch_jit`
+      compiles the same computation via `jax.jit`. Needed a separate
+      `_collapse_batch_core` pure-array function (no dict, no `float()`
+      casts, no name lookups) because those aren't traceable - the same
+      lesson `settle_grad` already hit with `Landscape.energy`. `softmax`
+      generalised to normalise per-row (`axis=-1`) rather than globally, a
+      strict generalisation verified bit-identical on the existing 1-D call
+      sites. Verified: `collapse_batch` matches per-probe `collapse()`
+      exactly; `collapse_batch_jit` matches `collapse_batch`; both checked
+      against the `.venv`'s real JAX install (90 passed, 5 skipped), not
+      just import-guarded.
+- [x] Property tests run on both backends: `test_backend.py`'s single old
+      parity test (bind/unbind only) split into four, one per Tier-2 module -
+      hypervector algebra, `settle`'s full energy trace (not just an end
+      value), `collapse_batch`, and `resonate` - each run once under NumPy
+      and once with `ZEUSS_BACKEND=jax` forced in a subprocess, asserting the
+      *same numbers* rather than "doesn't crash on either backend."
 
 ## v0.3 — the collapse made structural (Frontier 1, deeper)
 - [ ] Entropy-conditioned dimensionality: expand basis when entropy is high,

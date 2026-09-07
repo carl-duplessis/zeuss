@@ -24,7 +24,7 @@ from zeuss.tier2_substrate.hypervectors import (
     random_hypervector,
     unbind,
 )
-from zeuss.tier2_substrate.resonance import interfere
+from zeuss.tier2_substrate.resonance import interfere, resonate
 
 # The concrete array class of whatever backend is active (np.ndarray or jax.Array).
 _ARRAY_TYPE = type(xp.asarray([0.0]))
@@ -122,6 +122,36 @@ def test_jax_backend_matches_numpy_settle_energy_trace():
     )
     energies_jax = [float(x) for x in stdout.split(",")]
     assert np.allclose(np.asarray(energies_numpy), energies_jax, atol=1e-6)
+
+
+@pytest.mark.skipif(HAS_JAX, reason="active backend is already JAX")
+def test_jax_backend_matches_numpy_resonate():
+    """resonate() (Frontier 3's interference readout) must report the same
+    recovered filler and coherence on both backends - the fourth Tier-2
+    module (hypervectors, energy, collapse, resonance), so this parity
+    coverage isn't three-quarters of the substrate's claimed properties."""
+    pytest.importorskip("jax")
+    rng = np.random.default_rng(5)
+    query = random_hypervector(1024, rng)
+    role = random_hypervector(1024, rng)
+    filler = random_hypervector(1024, rng)
+    memory = bind(role, filler)
+    _recovered_numpy, coherence_numpy = resonate(query, memory, role)
+
+    stdout = _run_under_jax(
+        "import numpy as np;"
+        "from zeuss.backend import backend_name;"
+        "from zeuss.tier2_substrate.hypervectors import random_hypervector, bind;"
+        "from zeuss.tier2_substrate.resonance import resonate;"
+        "assert backend_name() == 'jax';"
+        "rng = np.random.default_rng(5);"
+        "query = random_hypervector(1024, rng); role = random_hypervector(1024, rng);"
+        "filler = random_hypervector(1024, rng);"
+        "memory = bind(role, filler);"
+        "_recovered, coherence = resonate(query, memory, role);"
+        "print(round(coherence, 10))"
+    )
+    assert abs(float(stdout) - coherence_numpy) < 1e-6
 
 
 @pytest.mark.skipif(HAS_JAX, reason="active backend is already JAX")
