@@ -611,6 +611,68 @@
       independent-attempts treatment automatically, without needing its own
       bespoke diagnosis first.
 
+## v0.22 — list-op reliability audit (found, deliberately not fixed yet)
+- [x] After v0.21 closed out the recursion-search gap, checked whether the
+      *other* half of synthesis - list processing via `Fold`/`Map`/`Filter`/
+      `Index` - has the same kind of hidden seed-dependent fragility
+      recursion turned out to have, since every committed test for these
+      (`test_synthesize_recovers_list_sum_via_fold`, `_length`,
+      `_map_doubling`, `_filter_positives`, `_first_element_via_index`) only
+      ever pins down a single seed, unlike the recursion tests which sweep
+      several after v0.15-v0.21 found single-seed claims didn't hold up.
+      Swept all five across 8 seeds each at their committed configuration,
+      plus three new, harder targets not in the suite at all
+      (`sum_of_squares_via_fold`, `count_positive_via_filter_length`, and a
+      recursion-template sanity check, `triangular_number_recursion`), using
+      the same verified-and-generalizes-on-held-out-input methodology the
+      recursion investigation established.
+- [x] Result: **19 of 64 runs failed** - a materially bigger gap than seed 8
+      ever was. By target: `length` 8/8 and `triangular_number_recursion`
+      8/8 (both fully reliable); `first_via_index` 7/8 (fails at seed 0 -
+      the committed test uses seed 1, which happens to dodge the one bad
+      seed); `sum_via_fold` 7/8 (fails at seed 3); `map_doubling` 6/8 (fails
+      at seeds 2, 4); `filter_positives` 4/8 (seeds 2/3/6/7 "verify" but
+      *silently don't generalize* - the worst failure shape, since it reads
+      as green); `sum_of_squares_via_fold` 3/8; `count_positive_via_filter_length`
+      2/8, including one seed whose "verified" solution *crashes* on a
+      held-out input (`modulo by zero`) rather than just answering wrong.
+- [x] The pattern points at a real, previously-invisible cause rather than
+      noise: every target that goes through `_recursive_template` is
+      perfectly reliable (8/8), because recursion has had four versions
+      (v0.14 resonant-bias templates, v0.15-v0.17 per-family elitism and
+      structural-choice-vs-learned-bias separation, v0.20 hole-mutation-rate
+      tuning, v0.21 random restarts) of dedicated structural hardening. List
+      processing has had none - `Fold`/`Map`/`Filter`/`Index` are generated
+      and mutated by the same blind uniform `_grow`/`mutate` used for
+      arbitrary arithmetic, with no equivalent template, no per-shape
+      elitism, and no bias toward historically-successful hole values. In
+      hindsight, poor and seed-dependent reliability here isn't surprising;
+      it was simply never measured until now because every committed test
+      happened to be written against a seed that worked.
+- [x] Deliberately left unfixed this session: a proportionate fix looks like
+      it needs the list-processing equivalent of what recursion already has
+      (a structural template for common shapes like "fold with a
+      accumulator-combining binop" or "filter-then-length", plus reliability
+      hardening informed by *why* each failure above happens - not yet
+      diagnosed the way seed 8's failure mode was) - comparable in scope to
+      the whole v0.14-v0.21 recursion effort, not a one-line tune. Recording
+      the honest, measured gap now rather than leaving it undiscovered
+      behind single-seed tests, the same reasoning v0.17 used for its own
+      non-fix.
+- [ ] Diagnose each failure shape above by instrumentation (as seed 8's was)
+      rather than guessing: at minimum, why `filter_positives` specifically
+      produces coincidental-but-wrong solutions on exactly half its seeds,
+      and what the `count_positive_via_filter_length` crash's discovered
+      expression actually looks like.
+- [ ] Design a structural template/bias mechanism for the most common
+      list-processing shapes (fold-with-combining-op, filter-then-length,
+      map-with-elementwise-op), mirroring `_recursive_template` /
+      `ResonantBias` / per-family elitism's role for recursion.
+- [ ] Re-run this session's 8-seed sweep (plus the existing committed tests)
+      against that mechanism to confirm it actually closes the gap rather
+      than moving it, the same discipline v0.20's fix and v0.21's five
+      rejected attempts were held to.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
