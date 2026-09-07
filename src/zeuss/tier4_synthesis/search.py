@@ -322,21 +322,129 @@ def _recursive_template(
         op = str(rng.choice(TEMPLATE_CATEGORIES["op"]))
 
     choices = {"cmp": cmp, "base_const": base_const, "step": step, "op": op, "combine_kind": combine_kind, "base_kind": base_kind}
-    if base_kind == "param":
-        then_node: Node = Var(param)
-    else:
+    if base_kind != "param":
         choices["base_val"] = base_val
-        then_node = Const(base_val)
     if combine_kind == "double_recur":
         choices["delta"] = delta
+    node = _build_template_node(name, param, seed_var, choices)
+    return node, choices
+
+
+def _build_template_body(name: str, param: str, choices: dict) -> Node:
+    """Build just the ``if p CMP k then base else COMBINE`` body from a
+    complete hole-filler ``choices`` dict - the part that's actually made of
+    hole-fillers. Split from :func:`_build_template_node` so
+    :func:`_mutate_template_hole` can rebuild *only* the body of an existing
+    node, leaving its ``in_expr`` (and anything else outside the body)
+    untouched - ``extract_template_choices`` only validates the body shape,
+    never ``in_expr``, so a template-shaped individual that mutation or
+    crossover has since altered elsewhere (e.g. spliced a different
+    ``in_expr`` in) cannot be assumed to still have the canonical
+    ``Recur(name, (Var(seed_var),))`` in_expr :func:`_recursive_template`
+    always builds.
+    """
+    if choices.get("base_kind") == "param":
+        then_node: Node = Var(param)
+    else:
+        then_node = Const(choices["base_val"])
+    op = choices["op"]
+    step = choices["step"]
+    if choices["combine_kind"] == "double_recur":
+        delta = choices.get("delta", 0)
         arg_a = BinOp("-", Var(param), Const(step))
         arg_b = arg_a if delta == 0 else BinOp("-", Var(param), Const(step + delta))
         combine = BinOp(op, Recur(name, (arg_a,)), Recur(name, (arg_b,)))
     else:
         combine = BinOp(op, Var(param), Recur(name, (BinOp("-", Var(param), Const(step)),)))
-    body = If(BinOp(cmp, Var(param), Const(base_const)), then_node, combine)
-    node = Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
-    return node, choices
+    return If(BinOp(choices["cmp"], Var(param), Const(choices["base_const"])), then_node, combine)
+
+
+def _build_template_node(name: str, param: str, seed_var: str, choices: dict) -> Node:
+    """Deterministically build the tree :func:`_recursive_template` describes
+    from a complete ``choices`` dict (as returned by it, or by
+    :func:`extract_template_choices`) plus the three names that aren't
+    themselves hole-fillers.
+    """
+    body = _build_template_body(name, param, choices)
+    return Letrec(name, (param,), body, Recur(name, (Var(seed_var),)))
+
+
+# Hole categories a template's *value* (not its structural family) is built
+# from - the ones _mutate_template_hole is allowed to retarget one at a time.
+# Mirrors _recursive_template's own bias/no-bias split: combine_kind, delta,
+# and base_kind are structural and excluded here for the same reason they're
+# never resonance-biased (see _recursive_template's docstring).
+_TUNABLE_HOLES = ("cmp", "base_const", "base_val", "op", "step")
+
+# Guaranteed hole-mutated offspring of the best template-shaped individual,
+# produced every generation regardless of fitness-proportionate selection -
+# see synthesize's template-elitism comment for why this is necessary, not
+# just the protected elite slot itself.
+_TEMPLATE_REFINEMENT_OFFSPRING = 8
+
+# Probability that mutate() takes the surgical single-hole path on a
+# template-shaped individual instead of falling through to full scoped
+# regrowth. Must stay < 1: hole mutation only ever changes one field at a
+# time, so a template stuck in a Hamming-distance-1 local optimum (no single
+# hole change improves it, but the right combination is two or more away)
+# has no way out if it's the *only* path mutate() ever takes on template
+# shapes - measured directly by instrumenting a run on the 2**n target
+# (seed 4): a family reached energy 1.0 at generation 0 and, with hole
+# mutation as the sole path, sat at exactly 1.0 through generation 59 while
+# its lineage grew to ~60% of the population. Full regrowth (drawing an
+# entirely fresh (cmp, base_const, base_val, op, step) combination at once
+# via _recursive_template) is what lets a stuck lineage jump past that kind
+# of plateau instead of only ever hill-climbing from wherever it first got
+# lucky.
+_TEMPLATE_HOLE_MUTATION_RATE = 0.5
+
+
+def _mutate_template_hole(node: Node, rng: np.random.Generator, bias: "ResonantBias | None") -> Node | None:
+    """Redraw exactly *one* hole-filler of a template-shaped node - the
+    surgical counterpart to :func:`mutate`'s uniform random-subtree
+    replacement, needed because a hole-filler like ``op`` or ``cmp`` is a
+    plain string *attribute* of a ``BinOp`` node, not its own tree node:
+    ``mutate`` can only ever replace the *entire* surrounding subtree (and
+    get lucky on every field at once via fresh ``_grow`` growth), never tune
+    one field of an otherwise-good template in place.
+
+    Found necessary while diagnosing why Fibonacci discovery was unreliable
+    on some seeds (``docs/ROADMAP.md`` v0.20): even after protecting the
+    best template-shaped individual from being lost to selection (see
+    ``synthesize``'s template elitism), its energy stayed stuck for the rest
+    of the run - protecting good genetic material is useless if nothing can
+    actually refine it. Never retargets ``combine_kind``/``delta``/
+    ``base_kind`` (see :data:`_TUNABLE_HOLES`) - those are structural
+    choices, and randomly flipping one mid-refinement would discard however
+    much of the surrounding tree's fit already depends on the current
+    family, the same reasoning ``_recursive_template`` already applies to
+    keep those choices out of ``ResonantBias``.
+
+    Returns ``None`` if ``node`` doesn't structurally match the template
+    shape (mirroring :func:`extract_template_choices`) or has no tunable
+    hole at all (only ``base_kind="param"`` templates with a
+    ``param_recur`` combine and no ``base_val``/``delta`` fields could, in
+    principle, hit this - in practice ``cmp``/``op``/``step`` are always
+    present, so this is a defensive fallback, not the common case).
+    """
+    choices = extract_template_choices(node)
+    if choices is None or not isinstance(node, Letrec):
+        return None
+    tunable = [k for k in _TUNABLE_HOLES if k in choices]
+    if not tunable:
+        return None
+    key = tunable[int(rng.integers(0, len(tunable)))]
+    new_choices = dict(choices)
+    new_choices[key] = bias.sample(key, rng) if bias is not None else _uniform_hole(key, rng)
+
+    new_body = _build_template_body(node.name, node.params[0], new_choices)
+    return Letrec(node.name, node.params, new_body, node.in_expr)
+
+
+def _uniform_hole(key: str, rng: np.random.Generator):
+    options = TEMPLATE_CATEGORIES[key]
+    value = options[int(rng.integers(0, len(options)))]
+    return int(value) if key in ("base_const", "base_val", "step") else str(value)
 
 
 def _is_decrement_of(expr: Node, param: str) -> bool:
@@ -601,7 +709,31 @@ def mutate(
     delta_p1: float = 0.15,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
-    correctly for that position (see module docstring)."""
+    correctly for that position (see module docstring).
+
+    If ``node`` already structurally matches the recursive template shape
+    (see :func:`extract_template_choices`), this calls
+    :func:`_mutate_template_hole` to surgically retune one hole-filler in
+    place *with probability* :data:`_TEMPLATE_HOLE_MUTATION_RATE`, rather than
+    uniform-random subtree replacement: found necessary empirically
+    (``docs/ROADMAP.md`` v0.20) - ordinary structural mutation on a good
+    template essentially never improves it, because a hole-filler like
+    ``op``/``cmp`` is a plain attribute, not its own tree node, so the only
+    way structural mutation can "fix" it is by regenerating (and getting
+    lucky on) the entire surrounding subtree at once. But this can't be the
+    *only* path taken on a template-shaped node: hole mutation changes one
+    field at a time, so a template stuck in a Hamming-distance-1 local
+    optimum (no single hole change improves it, the right combination is two
+    or more away) needs the full-regrowth path below to actually escape -
+    confirmed by instrumenting a stuck run (see
+    :data:`_TEMPLATE_HOLE_MUTATION_RATE`'s comment). Falling through at the
+    complementary probability lets both mechanisms coexist instead of one
+    eating the other.
+    """
+    if allow_recursion and rng.random() < _TEMPLATE_HOLE_MUTATION_RATE:
+        hole_mutated = _mutate_template_hole(node, rng, bias)
+        if hole_mutated is not None:
+            return hole_mutated
     n = count_nodes(node)
     target = int(rng.integers(0, n))
     return _replace_at_scoped(
@@ -786,6 +918,8 @@ def synthesize(
 
     best_node: Node = population[0]
     best_energy = float("inf")
+    best_template_node: dict[tuple[str, str], Node] = {}
+    best_template_energy: dict[tuple[str, str], float] = {}
     beta = beta_start
     beta_trace: list[float] = []
 
@@ -809,10 +943,71 @@ def synthesize(
                 if choices is not None:
                     bias.reinforce(choices, weight=float(np.exp(-e)))
 
+        # Template elitism: track the best template-shaped individual *per
+        # structural family* (combine_kind, base_kind), not one single best
+        # overall. Found empirically while diagnosing why Fibonacci is
+        # unreliable on some seeds (see docs/ROADMAP.md v0.20): a single
+        # global "best template" slot reproduces exactly the premature-
+        # family-lock-in failure mode this module's own docstrings already
+        # warn ResonantBias away from (see _recursive_template) - once
+        # param_recur (structurally incapable of ever matching a two-term
+        # recurrence like Fibonacci, confirmed by exhaustively sweeping every
+        # hole-filler value for a stuck param_recur candidate and finding
+        # none reduce its energy) reaches a locally-competitive energy, it
+        # permanently starves double_recur out of ever getting its own
+        # protected slot, since a fresh double_recur draw usually starts
+        # worse before refinement, and "best template" only ever updates on
+        # strict improvement. Keying elitism by family gives every family a
+        # fair, ongoing chance regardless of which one got lucky first.
+        if allow_recursion:
+            for p, e in zip(population, raw_energies):
+                choices = extract_template_choices(p)
+                if choices is None:
+                    continue
+                key = (choices["combine_kind"], choices["base_kind"])
+                if e < best_template_energy.get(key, float("inf")) - 1e-9:
+                    best_template_energy[key] = float(e)
+                    best_template_node[key] = p
+
         sizes = np.array([count_nodes(p) for p in population], dtype=float)
         selection_energies = raw_energies + parsimony * sizes
         probs = softmax(-beta * selection_energies)
         next_population = [population[idx_best]]  # elitism (by raw energy, not parsimony-adjusted)
+        for template_node in best_template_node.values():
+            if template_node is population[idx_best] or len(next_population) >= population_size:
+                continue
+            next_population.append(template_node)
+            # Elitism alone only *protects* a family's best template from
+            # deletion - it does nothing to *refine* it, since fitness-
+            # proportionate selection (below) gives a mediocre-energy
+            # template near-zero probability of ever being chosen as a
+            # parent once a lower-energy competitor (in or out of its
+            # family) exists - a real, measured failure mode: a template
+            # stuck at energy 8 never improved over 150 generations of
+            # elitism-only protection (see docs/ROADMAP.md v0.20).
+            # Guarantee it a handful of offspring every generation instead,
+            # independent of selection pressure - the actual mechanism that
+            # lets its hole-fillers get repeatedly refined toward the correct
+            # combination. Routed through mutate() (not _mutate_template_hole
+            # directly) so these offspring get the same
+            # _TEMPLATE_HOLE_MUTATION_RATE chance of a full scoped regrowth
+            # as ordinary mutation: calling _mutate_template_hole directly
+            # here was tried first and measured to reproduce the exact
+            # stuck-at-a-plateau failure this elitism was meant to fix - a
+            # frozen anchor only ever hill-climbing one hole at a time from
+            # itself, forever, can't escape a Hamming-distance-1 local
+            # optimum (confirmed by instrumenting a run on 2**n, seed 4: a
+            # family reached energy 1.0 at generation 0 and was still exactly
+            # 1.0 at generation 59 with this loop as the only refinement
+            # path). Mixing in occasional full redraws gives the guaranteed
+            # offspring the same chance to jump past that plateau that
+            # ordinary population members get.
+            for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
+                refined = mutate(
+                    template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
+                    delta_p1,
+                )
+                next_population.append(refined)
         while len(next_population) < population_size:
             i, j = rng.choice(len(population), size=2, p=np.asarray(probs))
             if rng.random() < 0.5:
