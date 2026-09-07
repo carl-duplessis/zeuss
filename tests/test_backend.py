@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from zeuss.backend import CDTYPE, HAS_JAX, backend_name, to_numpy, xp
+from zeuss.tier2_substrate.collapse import collapse_batch
 from zeuss.tier2_substrate.energy import Landscape, settle
 from zeuss.tier2_substrate.hypervectors import (
     Codebook,
@@ -60,29 +61,96 @@ def test_random_hypervector_seed_is_backend_independent():
     assert np.allclose(to_numpy(v), np.exp(1j * expected_theta))
 
 
-@pytest.mark.skipif(HAS_JAX, reason="active backend is already JAX")
-def test_jax_backend_matches_numpy_parity():
-    """When JAX is installed, forcing it must reproduce the NumPy results.
-
-    Run in a subprocess so the module-level backend selection happens under
-    ``ZEUSS_BACKEND=jax`` without disturbing this (NumPy) process.
+def _run_under_jax(code: str) -> str:
+    """Run ``code`` in a subprocess with ``ZEUSS_BACKEND=jax`` forced, so the
+    module-level backend selection happens under JAX without disturbing this
+    (NumPy) process, and return its stdout. Shared by the property-parity
+    tests below - each checks one genuine property this project claims
+    (hypervector algebra, energy dynamics, batched collapse), not just one
+    hand-picked operation chain, on both backends with the *same* numbers,
+    not just "doesn't crash on either."
     """
-    pytest.importorskip("jax")
     env = dict(os.environ, ZEUSS_BACKEND="jax", PYTHONPATH="src")
-    code = (
+    proc = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+@pytest.mark.skipif(HAS_JAX, reason="active backend is already JAX")
+def test_jax_backend_matches_numpy_parity_bind_unbind():
+    """When JAX is installed, forcing it must reproduce the NumPy result for
+    the algebra's core invertibility property: unbind(bind(a, b), a) ~ b."""
+    pytest.importorskip("jax")
+    stdout = _run_under_jax(
         "import numpy as np;"
-        "from zeuss.backend import backend_name, to_numpy;"
+        "from zeuss.backend import backend_name;"
         "from zeuss.tier2_substrate.hypervectors import random_hypervector, bind, unbind, similarity;"
         "assert backend_name() == 'jax';"
         "rng = np.random.default_rng(0);"
         "a = random_hypervector(1024, rng); b = random_hypervector(1024, rng);"
         "print(round(similarity(unbind(bind(a, b), a), b), 6))"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        env=env,
-        capture_output=True,
-        text=True,
+    assert float(stdout) > 0.99
+
+
+@pytest.mark.skipif(HAS_JAX, reason="active backend is already JAX")
+def test_jax_backend_matches_numpy_settle_energy_trace():
+    """settle()'s full energy trace - not just a spot-checked end value -
+    must match numerically between backends. Codebook symbols are derived
+    from the same NumPy-seeded generator on both sides
+    (test_random_hypervector_seed_is_backend_independent), so the entire
+    deterministic-descent trace should agree to float precision, not just
+    share the same qualitative "energy decreases" shape."""
+    pytest.importorskip("jax")
+    cb = Codebook(dim=1024, seed=2)
+    rec = encode_record(cb, [("colour", "red")])
+    probe = unbind(rec, cb.symbol("colour"))
+    land = Landscape().add(cb.symbol("red")).add(cb.symbol("blue"))
+    _z, energies_numpy = settle(land, probe, steps=20, temperature=0.0)
+
+    stdout = _run_under_jax(
+        "from zeuss.backend import backend_name;"
+        "from zeuss.tier2_substrate.energy import Landscape, settle;"
+        "from zeuss.tier2_substrate.hypervectors import Codebook, encode_record, unbind;"
+        "assert backend_name() == 'jax';"
+        "cb = Codebook(dim=1024, seed=2);"
+        "rec = encode_record(cb, [('colour', 'red')]);"
+        "probe = unbind(rec, cb.symbol('colour'));"
+        "land = Landscape().add(cb.symbol('red')).add(cb.symbol('blue'));"
+        "_z, energies = settle(land, probe, steps=20, temperature=0.0);"
+        "print(','.join(f'{float(e):.10f}' for e in energies))"
     )
-    assert proc.returncode == 0, proc.stderr
-    assert float(proc.stdout.strip()) > 0.99
+    energies_jax = [float(x) for x in stdout.split(",")]
+    assert np.allclose(np.asarray(energies_numpy), energies_jax, atol=1e-6)
+
+
+@pytest.mark.skipif(HAS_JAX, reason="active backend is already JAX")
+def test_jax_backend_matches_numpy_collapse_batch():
+    """collapse_batch (the new batched-collapse roadmap item) must resolve
+    the same probes to the same winners and entropies on both backends."""
+    pytest.importorskip("jax")
+    cb = Codebook(dim=1024, seed=1)
+    for name in ("red", "blue", "green"):
+        cb.symbol(name)
+    rng = np.random.default_rng(4)
+    probes = [random_hypervector(1024, rng) for _ in range(4)]
+    _z, info_numpy = collapse_batch(cb, probes, inverse_temperature=8.0)
+
+    stdout = _run_under_jax(
+        "import numpy as np;"
+        "from zeuss.backend import backend_name;"
+        "from zeuss.tier2_substrate.collapse import collapse_batch;"
+        "from zeuss.tier2_substrate.hypervectors import Codebook, random_hypervector;"
+        "assert backend_name() == 'jax';"
+        "cb = Codebook(dim=1024, seed=1);"
+        "[cb.symbol(n) for n in ('red', 'blue', 'green')];"
+        "rng = np.random.default_rng(4);"
+        "probes = [random_hypervector(1024, rng) for _ in range(4)];"
+        "_z, info = collapse_batch(cb, probes, inverse_temperature=8.0);"
+        "print('|'.join(info['winner']));"
+        "print(','.join(f'{float(e):.10f}' for e in info['entropy_bits']))"
+    )
+    winners_jax, entropy_line = stdout.splitlines()
+    assert winners_jax.split("|") == list(info_numpy["winner"])
+    entropy_jax = [float(x) for x in entropy_line.split(",")]
+    assert np.allclose(np.asarray(info_numpy["entropy_bits"]), entropy_jax, atol=1e-6)

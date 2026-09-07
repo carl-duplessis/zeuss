@@ -13,15 +13,26 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..backend import RDTYPE, xp
+from ..backend import HAS_JAX, RDTYPE, xp
 from .hypervectors import Codebook, bundle, normalize
 
 
 def softmax(x) -> "xp.ndarray":
+    """Softmax over the last axis.
+
+    ``axis=-1, keepdims=True`` is a strict generalisation, not a behaviour
+    change: for the 1-D inputs every existing call site uses, the last axis
+    *is* the only axis, so this returns bit-identical results to the old
+    global ``max``/``sum``. It also makes this function directly reusable for
+    a *batch* of distributions (shape ``(N, K)``, softmax independently per
+    row) - which a global ``max``/``sum`` would get wrong, silently
+    normalising the whole batch together instead of row-by-row. See
+    :func:`_collapse_batch_core`, which relies on exactly this.
+    """
     x = xp.asarray(x, dtype=RDTYPE)
-    x = x - xp.max(x)
+    x = x - xp.max(x, axis=-1, keepdims=True)
     e = xp.exp(x)
-    return e / xp.sum(e)
+    return e / xp.sum(e, axis=-1, keepdims=True)
 
 
 def entropy(probs, base: float = 2.0) -> float:
@@ -60,6 +71,106 @@ def collapse(codebook: Codebook, z, inverse_temperature: float = 8.0):
         "winner_prob": float(probs[k]),
     }
     return normalize(z_soft), info
+
+
+def _collapse_batch_core(zs, mats, inverse_temperature):
+    """Pure array restatement of :func:`collapse`'s math, batched over an
+    ``N``-probe leading axis instead of one probe at a time.
+
+    Returns arrays only (``z_soft``, ``probs``, ``entropy_bits``,
+    ``winner_idx``) - no Python dict, no name lookups, no ``float()`` casts -
+    so, unlike ``collapse`` itself, this is safe to trace with ``jax.jit``
+    (see :func:`collapse_batch_jit`). The batching is what a
+    ``jax.vmap(collapse)`` would give you by auto-batching the single-probe
+    function; it's written directly as vectorized array ops instead, since
+    NumPy has no ``vmap`` equivalent and this vectorized form runs correctly
+    on *either* backend unchanged (the ``xp`` purity convention).
+
+    ``sims[n, k]`` is exactly ``hypervectors.similarity(zs[n], mats[k])``,
+    computed for every probe against every codebook symbol in one matrix
+    product instead of ``similarity``'s per-pair ``vdot`` (which only
+    accepts one vector on each side).
+    """
+    dim = mats.shape[1]
+    sims = xp.real(zs @ xp.conj(mats).T) / dim
+    probs = softmax(inverse_temperature * sims)  # (N, K), independent per row
+    safe = xp.where(probs > 0, probs, 1.0)
+    entropy_bits = -xp.sum(probs * (xp.log(safe) / np.log(2.0)), axis=-1)  # (N,)
+    winner_idx = xp.argmax(probs, axis=-1)  # (N,)
+    z_soft = normalize(xp.asarray(probs, dtype=RDTYPE) @ mats)  # (N, D)
+    return z_soft, probs, entropy_bits, winner_idx
+
+
+def _collapse_batch_finish(codebook: Codebook, core_result) -> tuple:
+    """Shared Python-side finish for collapse_batch/collapse_batch_jit: turn
+    the pure-array core result into the same kind of info dict collapse()
+    returns, just batched. Kept separate from _collapse_batch_core because
+    name lookups and Python-side indexing can't happen inside a jax.jit trace.
+    """
+    z_soft, probs, entropy_bits, winner_idx = core_result
+    names = codebook.names()
+    winner_idx_np = np.asarray(winner_idx)
+    winner_prob = xp.take_along_axis(probs, winner_idx[:, None], axis=-1)[:, 0]
+    info = {
+        "names": names,
+        "probs": probs,
+        "entropy_bits": entropy_bits,
+        "winner": [names[int(k)] for k in winner_idx_np],
+        "winner_prob": winner_prob,
+    }
+    return z_soft, info
+
+
+def collapse_batch(codebook: Codebook, zs, inverse_temperature: float = 8.0):
+    """Batched :func:`collapse`: resolve many probes against the same
+    codebook in one vectorized pass instead of a Python loop calling
+    ``collapse`` once per probe. Runs on either backend (NumPy or JAX,
+    eagerly - see :func:`collapse_batch_jit` for the JIT-compiled variant).
+
+    ``zs``: a sequence of ``N`` probe hypervectors, each shape ``(D,)``.
+    Returns ``(z_collapsed, info)`` like :func:`collapse`, but every field of
+    ``info`` is now batched: ``probs`` is ``(N, K)``, ``entropy_bits`` and
+    ``winner_prob`` are ``(N,)``, ``winner`` is a length-``N`` list of names.
+    """
+    mats = codebook.matrix()
+    zs_stacked = xp.stack([normalize(z) for z in zs], axis=0)
+    core_result = _collapse_batch_core(zs_stacked, mats, inverse_temperature)
+    return _collapse_batch_finish(codebook, core_result)
+
+
+_jit_collapse_batch_core = None
+if HAS_JAX:
+    import jax as _jax
+
+    # Created once, at import time, and reused for every call - jax.jit's
+    # compilation cache is keyed to this specific wrapped-function object, so
+    # creating a fresh jax.jit(...) wrapper inside collapse_batch_jit on every
+    # call would silently retrace (and thus never actually benefit from JIT
+    # compilation) instead of hitting the cache on repeated same-shape calls.
+    _jit_collapse_batch_core = _jax.jit(_collapse_batch_core)
+
+
+def collapse_batch_jit(codebook: Codebook, zs, inverse_temperature: float = 8.0):
+    """Like :func:`collapse_batch`, but the core batched computation runs
+    through a ``jax.jit``-compiled call - the concrete "jit" half of this
+    roadmap item (see :func:`_collapse_batch_core` for the "vmap-style"
+    batching half). XLA compiles the core once per distinct input shape
+    (cached module-wide, see ``_jit_collapse_batch_core``) and reuses that
+    compiled version on every later call with matching shapes.
+
+    Requires the JAX backend; raises ``RuntimeError`` otherwise (mirroring
+    :func:`zeuss.tier2_substrate.energy.settle_grad` - there is no
+    meaningful JIT compilation on plain NumPy).
+    """
+    if not HAS_JAX:
+        raise RuntimeError(
+            "collapse_batch_jit requires the JAX backend - install the 'jax' extra "
+            "(pip install 'zeuss[jax]') and leave ZEUSS_BACKEND unset or set it to 'jax'"
+        )
+    mats = codebook.matrix()
+    zs_stacked = xp.stack([normalize(z) for z in zs], axis=0)
+    core_result = _jit_collapse_batch_core(zs_stacked, mats, inverse_temperature)
+    return _collapse_batch_finish(codebook, core_result)
 
 
 def anneal(codebook: Codebook, z, schedule=(0.5, 1, 2, 4, 8, 16, 32)):
