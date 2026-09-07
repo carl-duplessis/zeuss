@@ -458,8 +458,12 @@ def test_synthesize_recovers_map_doubling():
         Example({"xs": []}, []),
         Example({"xs": [5]}, [10]),
     ]
+    # 150/60 was under-provisioned, not merely unlucky: it finds nothing at
+    # all (verified=False) on 2 of 8 seeds swept. 400/150 is 8/8 and still
+    # runs in well under a second, since a failed search is what is slow
+    # here, not a successful one. See docs/ROADMAP.md v0.22.
     best, _trace, verified = synthesize(
-        ["xs"], examples, list_inputs=("xs",), population_size=150, max_generations=60, max_depth=2, rng=rng
+        ["xs"], examples, list_inputs=("xs",), population_size=400, max_generations=150, max_depth=2, rng=rng
     )
     assert verified
     for xs in ([1, 1, 1], [10, -5]):
@@ -467,12 +471,28 @@ def test_synthesize_recovers_map_doubling():
 
 
 def test_synthesize_recovers_filter_positives():
+    """The example set deliberately pins down *positive* (``x > 0``), not
+    merely *non-negative* (``x >= 0``), and breaks an accidental
+    odd/positive correlation - both found empirically, not guessed. The
+    original four examples contained no ``0`` at all, leaving ``> 0`` and
+    ``>= 0`` indistinguishable on the training set: sweeping 8 seeds, half of
+    them "verified" on ``Filter(xs, item, item >= False)`` (i.e. ``>= 0``)
+    and then failed the held-out ``[0, 0, 1]``. Worse, in ``[1, -2, 3, -4]``
+    the positives are *exactly* the odd values, and one seed duly learned
+    ``item % 2`` instead. Adding ``[0]``, ``[0, 2, -5]`` and ``[4, 6]``
+    (zeros on both sides of the boundary, plus even positives) takes this
+    from 4/8 seeds to 8/8 at the same search budget - a training-data fix,
+    with no change to search.py. See ``docs/ROADMAP.md`` v0.22.
+    """
     rng = np.random.default_rng(1)
     examples = [
         Example({"xs": [1, -2, 3, -4]}, [1, 3]),
         Example({"xs": []}, []),
         Example({"xs": [-1, -2]}, []),
         Example({"xs": [5]}, [5]),
+        Example({"xs": [0]}, []),
+        Example({"xs": [0, 2, -5]}, [2]),
+        Example({"xs": [4, 6]}, [4, 6]),
     ]
     best, _trace, verified = synthesize(
         ["xs"], examples, list_inputs=("xs",), population_size=200, max_generations=60, max_depth=2, rng=rng
@@ -489,12 +509,92 @@ def test_synthesize_recovers_first_element_via_index():
         Example({"xs": [1]}, 1),
         Example({"xs": [-5, 2]}, -5),
     ]
+    # 100/30 fails outright on seed 0 of 8 swept; this test happened to be
+    # written against seed 1, which passes - exactly the single-seed luck the
+    # v0.22 audit was looking for. 300/100 is 8/8. See docs/ROADMAP.md v0.22.
     best, _trace, verified = synthesize(
-        ["xs"], examples, list_inputs=("xs",), population_size=100, max_generations=30, max_depth=2, rng=rng
+        ["xs"], examples, list_inputs=("xs",), population_size=300, max_generations=100, max_depth=2, rng=rng
     )
     assert verified
     for xs in ([42, 1, 2], [100]):
         assert evaluate(best, {"xs": xs}, Fuel(500)) == xs[0]
+
+
+def test_list_ops_are_reliable_across_seeds():
+    """Multi-seed reliability for the list-op targets, mirroring what
+    ``test_resonant_bias_discovers_recursion_reliably_across_seeds`` does for
+    recursion - and added for the same reason it was.
+
+    Every list-op test above pins down exactly one seed. The v0.22 audit
+    (``docs/ROADMAP.md``) swept them across 8 seeds each and found 19 of 64
+    runs failing: ``filter_positives`` silently "verified" on a wrong program
+    on half its seeds, ``map_doubling`` found nothing on 2, and
+    ``first_via_index``'s committed seed happened to be one of the few that
+    worked. None of that was visible from single-seed tests - which is the
+    actual lesson, and why this test exists: a target is only claimed
+    reliable if it holds across seeds, not because one chosen seed passes.
+
+    Deliberately asserts *verified and generalises to held-out input*, never
+    just ``verified`` - the audit's most common failure shape was a program
+    that matched every training example and still diverged on held-out data
+    (see ``synth.py``'s honesty statement: ``verified`` means "matched the
+    given examples", never "proven correct").
+    """
+    cases = [
+        (
+            "length",
+            [
+                Example({"xs": [1, 2, 3]}, 3), Example({"xs": []}, 0),
+                Example({"xs": [5, 5]}, 2), Example({"xs": [1]}, 1),
+            ],
+            dict(population_size=100, max_generations=30, max_depth=2),
+            ([1, 2, 3, 4, 5], [], [9]),
+            len,
+        ),
+        (
+            "map_doubling",
+            [
+                Example({"xs": [1, 2, 3]}, [2, 4, 6]), Example({"xs": []}, []),
+                Example({"xs": [5]}, [10]),
+            ],
+            dict(population_size=400, max_generations=150, max_depth=2),
+            ([1, 1, 1], [10, -5]),
+            lambda xs: [x * 2 for x in xs],
+        ),
+        (
+            "filter_positives",
+            [
+                Example({"xs": [1, -2, 3, -4]}, [1, 3]), Example({"xs": []}, []),
+                Example({"xs": [-1, -2]}, []), Example({"xs": [5]}, [5]),
+                Example({"xs": [0]}, []), Example({"xs": [0, 2, -5]}, [2]),
+                Example({"xs": [4, 6]}, [4, 6]),
+            ],
+            dict(population_size=200, max_generations=60, max_depth=2),
+            ([-1, 2, -3, 4, 5], [0, 0, 1]),
+            lambda xs: [x for x in xs if x > 0],
+        ),
+        (
+            "first_via_index",
+            [
+                Example({"xs": [7, 8, 9]}, 7), Example({"xs": [1]}, 1),
+                Example({"xs": [-5, 2]}, -5),
+            ],
+            dict(population_size=300, max_generations=100, max_depth=2),
+            ([42, 1, 2], [100]),
+            lambda xs: xs[0],
+        ),
+    ]
+    for name, examples, kwargs, held_out, expected_fn in cases:
+        for seed in range(8):
+            rng = np.random.default_rng(seed)
+            best, _trace, verified = synthesize(
+                ["xs"], examples, list_inputs=("xs",), rng=rng, **kwargs
+            )
+            assert verified, f"{name} seed {seed} found nothing"
+            for xs in held_out:
+                assert evaluate(best, {"xs": xs}, Fuel(500)) == expected_fn(xs), (
+                    f"{name} seed {seed} verified on a non-generalizing program (xs={xs})"
+                )
 
 
 def test_synthesize_reports_unverified_when_infeasible_within_budget():

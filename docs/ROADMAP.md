@@ -611,7 +611,7 @@
       independent-attempts treatment automatically, without needing its own
       bespoke diagnosis first.
 
-## v0.22 — list-op reliability audit (found, deliberately not fixed yet)
+## v0.22 — list-op reliability audit, diagnosed and fixed
 - [x] After v0.21 closed out the recursion-search gap, checked whether the
       *other* half of synthesis - list processing via `Fold`/`Map`/`Filter`/
       `Index` - has the same kind of hidden seed-dependent fragility
@@ -636,8 +636,11 @@
       as green); `sum_of_squares_via_fold` 3/8; `count_positive_via_filter_length`
       2/8, including one seed whose "verified" solution *crashes* on a
       held-out input (`modulo by zero`) rather than just answering wrong.
-- [x] The pattern points at a real, previously-invisible cause rather than
-      noise: every target that goes through `_recursive_template` is
+- [x] ~~Initial hypothesis (**superseded** by the instrumented diagnosis
+      below - kept because the reasoning trail is the point: this looked
+      compelling and was wrong)~~: the pattern seemed to point at a
+      structural cause -
+      every target that goes through `_recursive_template` is
       perfectly reliable (8/8), because recursion has had four versions
       (v0.14 resonant-bias templates, v0.15-v0.17 per-family elitism and
       structural-choice-vs-learned-bias separation, v0.20 hole-mutation-rate
@@ -649,29 +652,79 @@
       hindsight, poor and seed-dependent reliability here isn't surprising;
       it was simply never measured until now because every committed test
       happened to be written against a seed that worked.
-- [x] Deliberately left unfixed this session: a proportionate fix looks like
-      it needs the list-processing equivalent of what recursion already has
-      (a structural template for common shapes like "fold with a
-      accumulator-combining binop" or "filter-then-length", plus reliability
-      hardening informed by *why* each failure above happens - not yet
-      diagnosed the way seed 8's failure mode was) - comparable in scope to
-      the whole v0.14-v0.21 recursion effort, not a one-line tune. Recording
-      the honest, measured gap now rather than leaving it undiscovered
-      behind single-seed tests, the same reasoning v0.17 used for its own
-      non-fix.
-- [ ] Diagnose each failure shape above by instrumentation (as seed 8's was)
-      rather than guessing: at minimum, why `filter_positives` specifically
-      produces coincidental-but-wrong solutions on exactly half its seeds,
-      and what the `count_positive_via_filter_length` crash's discovered
-      expression actually looks like.
-- [ ] Design a structural template/bias mechanism for the most common
-      list-processing shapes (fold-with-combining-op, filter-then-length,
-      map-with-elementwise-op), mirroring `_recursive_template` /
-      `ResonantBias` / per-family elitism's role for recursion.
-- [ ] Re-run this session's 8-seed sweep (plus the existing committed tests)
-      against that mechanism to confirm it actually closes the gap rather
-      than moving it, the same discipline v0.20's fix and v0.21's five
-      rejected attempts were held to.
+- [x] ~~Planned fix under that hypothesis (**not built** - the diagnosis
+      below showed it would have been solving the wrong problem)~~: a
+      list-processing equivalent of `_recursive_template` /`ResonantBias` /
+      per-family elitism, estimated as comparable in scope to the whole
+      v0.14-v0.21 recursion effort. Worth recording that this estimate was
+      never tested, because the actual fix turned out to be an example-set
+      change and two budget bumps - a reminder to diagnose before scoping.
+- [x] Diagnosed each failure shape by instrumentation (printing the actual
+      discovered expression and the first held-out input it diverges on)
+      rather than guessing - and **the diagnosis refuted this section's own
+      initial hypothesis above**. The failures are not caused by list
+      processing lacking recursion's structural hardening. They are two
+      distinct problems, neither of which is in the search machinery:
+      - **Class A - underdetermined training examples** (the
+        verified-but-wrong failures). `filter_positives`' four committed
+        examples contain no `0` anywhere, leaving `x > 0` and `x >= 0`
+        indistinguishable on the training set; seeds 6 and 7 both returned
+        `Filter(xs, item, item >= False)` (i.e. `>= 0`) and duly failed the
+        held-out `[0, 0, 1]`. Seed 4's `count_positive` crash is the same
+        root cause wearing a different hat: it found `item % item`, which is
+        only a `ZeroDivisionError` when an item *is* zero. And in
+        `[1, -2, 3, -4]` the positives are exactly the odd values, so seed 2
+        learned `item % 2` instead of positivity. The search was working
+        correctly throughout - it found programs consistent with every
+        example it was given; the examples simply did not pin down the
+        intended concept.
+      - **Class B - under-provisioned budget** (the verified=False
+        failures). `map_doubling` at 150/60 and `first_via_index` at 100/30
+        simply never find anything on some seeds.
+- [x] Fixed both classes, each with the remedy matched to its own class -
+      and confirmed the remedies are *not* interchangeable, which is the
+      main transferable lesson here. Adding examples fixes Class A
+      (`filter_positives` 4/8 -> **8/8** at the unchanged search budget, no
+      `search.py` change at all) but actively *hurts* Class B: applying the
+      same "richer examples" treatment to `sum_via_fold`, whose failure is
+      verified=False, took it from 7/8 to 4/8, since more constraints make
+      an already-failing search harder rather than better-determined. Raising
+      the budget fixes Class B (`map_doubling` 6/8 -> **8/8** at 400/150;
+      `first_via_index` 7/8 -> **8/8** at 300/100) and does nothing for
+      Class A. This is the same shape as v0.16's finding that adding a
+      Fibonacci example fixed two seeds and broke a third - "add more data"
+      and "spend more compute" are each right only for one failure mode.
+- [x] Systemic fix, so this cannot silently recur: added
+      `test_list_ops_are_reliable_across_seeds`, which sweeps `length`,
+      `map_doubling`, `filter_positives` and `first_via_index` across 8
+      seeds each and asserts *verified **and** generalises to held-out
+      input* - never `verified` alone, since the audit's most common failure
+      shape was a program that matched every training example and still
+      diverged. This is the list-op counterpart of
+      `test_resonant_bias_discovers_recursion_reliably_across_seeds`, and it
+      exists because single-seed tests are precisely what hid this for so
+      long (`first_via_index`'s committed seed 1 passes; seed 0 does not).
+      32 synthesis runs, ~1.6s total. Full suite: 102 passed, 10 skipped,
+      ~68s - unchanged from before.
+- [x] Not fixed, recorded honestly rather than tuned around:
+      - `sum_via_fold` stays 7/8 (seed 3 finds nothing). Both available
+        remedies were measured and neither helps: richer examples take it to
+        4/8, and a larger budget leaves it at 7/8 while merely moving which
+        seed fails. Its committed single-seed test passes.
+      - `sum_of_squares_via_fold` (a new target this audit introduced, never
+        a committed test) is 3/8 and, unusually, gets *worse* with a larger
+        budget (1/8 at 800/200). A parsimony-pressure explanation was the
+        obvious candidate - the correct fold body `acc + item*item` is
+        strictly larger than near-miss bodies, so `parsimony * count_nodes`
+        penalises exactly the right answer - but this was **tested and
+        refuted**: lowering parsimony makes it monotonically worse (3/8 at
+        0.02, 1/8 at 0.005, 0/8 at 0.0), so parsimony is helping, not
+        hurting. Left as a documented capability limit of the current
+        list-op grammar rather than an unexplained flake; a genuine
+        structural-template mechanism for fold shapes (the fix this section
+        originally proposed for *all* of these) is plausibly still the right
+        answer for this one target specifically, but is no longer justified
+        by the other failures, which turned out to have simpler causes.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
