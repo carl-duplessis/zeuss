@@ -433,6 +433,43 @@
       crystallisation this project is about. Saves a PNG (gitignored, like
       every other generated artifact) rather than opening a GUI window.
 
+## v0.20 — fixed the recursion-discovery reliability gap from CLAUDE.md
+- [x] Attempted fix: per-family template elitism (track the best
+      template-shaped individual keyed by `(combine_kind, base_kind)`
+      instead of one global slot, so `param_recur` reaching a competitive
+      energy first can no longer permanently starve `double_recur` out of
+      its own protected slot) plus `_mutate_template_hole` (a surgical
+      mutator that redraws exactly one hole-filler in place, since
+      `mutate`'s old uniform subtree replacement could only ever "fix" a
+      hole-filler by getting lucky on the whole surrounding subtree at
+      once) with a guaranteed 8 hole-mutated offspring per family per
+      generation, independent of selection pressure.
+- [x] Regression found before landing: both the guaranteed-offspring loop
+      and `mutate`'s own template shortcut routed template-shaped
+      individuals through `_mutate_template_hole` exclusively, which only
+      ever changes one hole-filler at a time. Once a lineage reached a
+      Hamming-distance-1 local optimum (no single hole change improves it,
+      the right combination is two or more away), nothing could push it
+      past that plateau - confirmed by instrumenting a `2**n` run (seed 4):
+      a family reached energy 1.0 at generation 0 and was still exactly 1.0
+      at generation 59, with that lineage grown to ~60% of the population.
+      All four recursion-synthesis tests failed against this version,
+      including the ones this fix was meant to make more reliable.
+- [x] Real fix: gated `mutate`'s per-node shortcut with a new
+      `_TEMPLATE_HOLE_MUTATION_RATE = 0.5` constant, and routed the
+      guaranteed-offspring loop through `mutate()` instead of calling
+      `_mutate_template_hole` directly, so both paths keep a real chance of
+      full scoped regrowth (a fresh `_recursive_template` draw) alongside
+      single-hole refinement. Verified: the same instrumented `2**n` run
+      now solves at generation 3 instead of stalling; all four
+      recursion-synthesis tests pass, including
+      `test_resonant_bias_discovers_recursion_reliably_across_seeds` and
+      `test_resonant_bias_can_discover_fibonacci`; full suite green (101
+      passed, 10 skipped) in ~94s, down from ~820s when the stuck searches
+      were burning their full generation budget every run.
+- [x] `CLAUDE.md`'s good-first-tasks entry for this (open since v0.17)
+      removed - no longer an open item.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

@@ -44,14 +44,11 @@ energy minimisation, resonance) over designs that special-case a symbolic path.
 3. New optional deps stay optional (guarded imports + `pyproject` extras).
 4. If you add a GPU kernel, add a parity test against the NumPy reference.
 
-## Good first tasks (see docs/ROADMAP.md for the full list)
+## Good first tasks
 
-- Improve asymmetric-recursion (Fibonacci-class) discovery reliability
-  (`tier4_synthesis`, see `docs/ROADMAP.md` v0.17): still open after v0.17 -
-  adding one more training example fixed seeds 4/7 but broke seed 1, a
-  genuine whack-a-mole, not a fixable-with-more-data problem. Needs a real
-  fix (e.g. tune the `delta_p1` schedule itself), not another example-count
-  tweak — that direction was tried and shown not to generalize across seeds.
+See `docs/ROADMAP.md` for the full list. (The asymmetric-recursion
+discovery-reliability gap that used to be listed here was fixed in v0.20 -
+see that entry.)
 
 ## Don't
 
