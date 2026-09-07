@@ -49,8 +49,25 @@
       *same numbers* rather than "doesn't crash on either backend."
 
 ## v0.3 — the collapse made structural (Frontier 1, deeper)
-- [ ] Entropy-conditioned dimensionality: expand basis when entropy is high,
-      project onto a low-dimensional orthogonal subspace as entropy → 0.
+- [x] Entropy-conditioned dimensionality: `collapse.participation_ratio`
+      (inverse Simpson index, `1/sum(p_i^2)`) turns the occupancy
+      distribution into a continuous *count* of how many codebook symbols
+      the state is actually spread across - exactly `1.0` for a one-hot
+      distribution, exactly `K` for uniform over `K` symbols. `dimensional_
+      collapse` uses it to literally truncate the live basis to the top
+      `ceil(participation_ratio)` symbols by occupancy, dropping the rest
+      entirely rather than down-weighting them - a real `K`-dim-to-1-dim
+      basis contraction as entropy falls, matching `VISION.md`'s "expands
+      into high-dimensional... collapses into low-dimensional orthogonal...
+      Boolean lattice" framing, not just a fixed-`D` reweighting (which is
+      all plain `collapse` ever does). At maximal entropy (uniform
+      occupancy) every symbol stays live and this is numerically identical
+      to `collapse`, checked directly. Found one real bug while verifying:
+      floating-point noise pushed a true one-hot `participation_ratio` a
+      hair above `1.0` (`1.0000000000000862`), which plain `ceil` rounded up
+      to `2` instead of `1` - fixed with a small epsilon tolerance before
+      `ceil`, not by rounding the ratio itself (which would blur genuinely
+      fractional values elsewhere on the schedule).
 - [ ] Learnable codebook (train symbols so real structure self-organises).
 
 ## v0.4 — GPU kernels (Frontier 3, faster)

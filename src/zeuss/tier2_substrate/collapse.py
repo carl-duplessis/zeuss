@@ -173,6 +173,69 @@ def collapse_batch_jit(codebook: Codebook, zs, inverse_temperature: float = 8.0)
     return _collapse_batch_finish(codebook, core_result)
 
 
+def participation_ratio(probs) -> float:
+    """Inverse Simpson index: the *effective* number of symbols a distribution
+    is spread across, in ``[1, K]`` for ``K`` symbols.
+
+    ``1 / sum(p_i^2)``: exactly ``1.0`` for a one-hot distribution (fully
+    collapsed onto a single symbol), exactly ``K`` for the uniform
+    distribution (spread evenly across all ``K``), and continuous in between
+    - unlike entropy (bits, unbounded log scale), this is directly a *count*
+    of live dimensions, which is what :func:`dimensional_collapse` truncates
+    the basis to.
+    """
+    p = xp.asarray(probs, dtype=RDTYPE)
+    return float(1.0 / xp.sum(p * p))
+
+
+def dimensional_collapse(codebook: Codebook, z, inverse_temperature: float = 8.0):
+    """Collapse ``z``, but literally shrink the live ambient dimensionality
+    with entropy instead of only reweighting a fixed-size basis (that's what
+    plain :func:`collapse` already does).
+
+    The codebook's ``K`` symbols are an orthogonal basis (by construction:
+    independent random phasors are quasi-orthogonal in high-D, and
+    :func:`participation_ratio` treats them as exactly orthogonal, which is
+    the "Boolean lattice" limit `VISION.md` describes). Only the top
+    ``ceil(participation_ratio(probs))`` symbols, ranked by occupancy
+    probability, are kept in the returned state - the rest are dropped from
+    the basis entirely, not merely down-weighted toward zero. At maximal
+    entropy (uniform occupancy) every symbol stays live and this is
+    numerically identical to :func:`collapse`; as entropy drops toward zero
+    the live set shrinks until only the winning symbol remains - a genuine
+    ``K``-dimensional-basis to `1`-dimensional-point contraction, not a
+    fixed-``D`` reweighting.
+    """
+    names = codebook.names()
+    probs = occupancy(codebook, z, inverse_temperature)
+    eff_dim = participation_ratio(probs)
+    # ceil with a small epsilon tolerance: floating-point noise can push
+    # eff_dim a hair above an exact integer (e.g. 1.0000000000000862 for a
+    # true one-hot distribution), which plain ceil would round up to the
+    # *next* integer instead of recognising it as that integer.
+    k_live = max(1, int(np.ceil(eff_dim - 1e-9)))
+
+    mats = codebook.matrix()
+    order = xp.argsort(-probs)
+    live_idx = order[:k_live]
+    live_probs = probs[live_idx]
+    live_probs = live_probs / xp.sum(live_probs)
+    z_soft = bundle([mats[i] for i in live_idx], weights=list(live_probs))
+
+    k = int(xp.argmax(probs))
+    info = {
+        "names": names,
+        "probs": probs,
+        "entropy_bits": entropy(probs),
+        "winner": names[k],
+        "winner_prob": float(probs[k]),
+        "eff_dim": eff_dim,
+        "k_live": k_live,
+        "live_names": [names[int(i)] for i in live_idx],
+    }
+    return normalize(z_soft), info
+
+
 def anneal(codebook: Codebook, z, schedule=(0.5, 1, 2, 4, 8, 16, 32)):
     """Run a cooling schedule and record entropy dropping toward a decision.
 

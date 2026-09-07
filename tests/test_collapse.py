@@ -8,7 +8,9 @@ from zeuss.tier2_substrate.collapse import (
     collapse,
     collapse_batch,
     collapse_batch_jit,
+    dimensional_collapse,
     entropy,
+    participation_ratio,
     softmax,
 )
 from zeuss.tier2_substrate.hypervectors import Codebook, bundle, encode_record, random_hypervector, unbind
@@ -132,3 +134,67 @@ def test_collapse_batch_jit_matches_collapse_batch():
     assert info_jit["winner"] == info_eager["winner"]
     assert np.allclose(np.asarray(info_jit["entropy_bits"]), np.asarray(info_eager["entropy_bits"]), atol=1e-6)
     assert np.allclose(np.asarray(z_jit), np.asarray(z_eager), atol=1e-6)
+
+
+def test_participation_ratio_bounds():
+    """1.0 for a one-hot distribution, K for the uniform distribution over K -
+    the two limits dimensional_collapse's basis truncation must hit exactly."""
+    k = 5
+    assert abs(participation_ratio(np.array([1.0, 0.0, 0.0, 0.0, 0.0])) - 1.0) < 1e-9
+    assert abs(participation_ratio(np.full(k, 1.0 / k)) - k) < 1e-9
+
+
+def test_dimensional_collapse_matches_collapse_at_high_entropy():
+    """At low beta (near-uniform occupancy over all 5 codebook symbols),
+    participation_ratio ~ 5, so every symbol stays in the live basis and
+    dimensional_collapse must reduce to plain collapse() exactly - the
+    "expand basis when entropy is high" half of the roadmap item."""
+    cb = _codebook_with_distractors(seed=1)
+    rng = np.random.default_rng(9)
+    probe = random_hypervector(8192, rng)
+
+    z_dim, info_dim = dimensional_collapse(cb, probe, inverse_temperature=0.1)
+    z_plain, info_plain = collapse(cb, probe, inverse_temperature=0.1)
+
+    assert info_dim["k_live"] == len(cb.names())
+    assert np.allclose(np.asarray(z_dim), np.asarray(z_plain), atol=1e-6)
+    assert abs(info_dim["entropy_bits"] - info_plain["entropy_bits"]) < 1e-9
+
+
+def test_dimensional_collapse_shrinks_to_one_symbol_at_low_entropy():
+    """At high beta on an unambiguous probe (exact symbol match), occupancy
+    collapses onto one symbol, participation_ratio -> 1, and the returned
+    state must be (numerically) just that one symbol - a genuine basis
+    contraction to a single point in the discrete Boolean lattice, not merely
+    a down-weighted D-dim blend - the "project onto low-D orthogonal subspace
+    as entropy -> 0" half of the roadmap item."""
+    cb = _codebook_with_distractors(seed=1)
+    probe = cb.symbol("red")
+
+    z_dim, info_dim = dimensional_collapse(cb, probe, inverse_temperature=32.0)
+
+    assert info_dim["k_live"] == 1
+    assert info_dim["live_names"] == ["red"]
+    assert info_dim["winner"] == "red"
+    from zeuss.tier2_substrate.hypervectors import similarity
+
+    assert similarity(z_dim, cb.symbol("red")) > 0.999
+
+
+def test_dimensional_collapse_k_live_shrinks_along_cooling_schedule():
+    """As beta rises across an anneal-style schedule on an ambiguous probe,
+    the live basis size must shrink (not grow) - the space's dimensionality
+    contracting as entropy drops, matching entropy's own monotonic drop
+    (test_cooling_reduces_entropy_and_locks_winner) but measured directly in
+    basis size rather than bits."""
+    cb = _codebook_with_distractors(seed=1)
+    rec = encode_record(cb, [("colour", "red")])
+    probe = unbind(rec, cb.symbol("colour"))
+
+    k_live_trace = []
+    for beta in (0.1, 1, 4, 16, 64):
+        _, info = dimensional_collapse(cb, probe, inverse_temperature=beta)
+        k_live_trace.append(info["k_live"])
+
+    assert k_live_trace[0] >= k_live_trace[-1]
+    assert k_live_trace[-1] == 1
