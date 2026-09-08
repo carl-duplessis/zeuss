@@ -412,12 +412,25 @@ def test_synthesize_recovers_simple_arithmetic_function():
 
 
 def test_synthesize_recovers_list_sum_via_fold():
+    """A richer training set than the minimum needed to pin down "sum" - with
+    the fuller grammar (comparisons, If, etc.) a handful of small examples
+    can be satisfied by a coincidental non-summing expression that doesn't
+    generalize (found empirically while extending this DSL); more diverse
+    examples make that kind of overfit much less likely to slip through.
+
+    Reliability note: seed 3 of an 8-seed sweep failed to find anything at
+    all (docs/ROADMAP.md v0.22/v0.23) - diagnosed as converging on a non-
+    ``Fold`` ``Index``/``Map`` expression and burning its whole budget
+    stuck there, a failure neither richer examples nor a larger budget
+    fixed without relocating it to a different seed. It was left at 7/8 by
+    deliberate choice rather than tuned around. v0.24's fold template
+    (``_fold_template``, added for ``sum_of_squares_via_fold``) fixed it as
+    a side effect, confirmed directly rather than assumed: "sum" is exactly
+    ``combine_op="+", item_kind="identity"``, one of the template's three
+    direct draws, so seed 3's population now has a structural escape route
+    it never had before. Re-swept at 8/8 after landing v0.24.
+    """
     rng = np.random.default_rng(0)
-    # A richer training set than the minimum needed to pin down "sum" - with
-    # the fuller grammar (comparisons, If, etc.) a handful of small examples
-    # can be satisfied by a coincidental non-summing expression that doesn't
-    # generalize (found empirically while extending this DSL); more diverse
-    # examples make that kind of overfit much less likely to slip through.
     examples = [
         Example({"xs": [1, 2, 3]}, 6),
         Example({"xs": [4, 5]}, 9),

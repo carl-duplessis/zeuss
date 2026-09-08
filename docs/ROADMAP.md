@@ -848,6 +848,25 @@
       `test_list_ops_are_reliable_across_seeds` (v0.22) with the same
       8-seed sweep this entry measured, so this target is now held to the
       same standard as the rest rather than trusted on one seed.
+- [x] Correction, found within the hour of writing the entry above -
+      recorded rather than quietly folded in, since the whole point of this
+      running log is to keep the reasoning trail honest: `sum_via_fold`
+      seed 3 (left at 7/8 "by choice" three separate times across v0.22,
+      v0.23, and this entry) was re-swept after landing the fold template
+      and is now **8/8**. Not a new fix - a side effect never checked for.
+      "Sum" is exactly `combine_op="+", item_kind="identity"`, one of
+      `_fold_template`'s three direct draws, so seed 3's population gained
+      the same structural escape route `sum_of_squares_via_fold` did. The
+      actual lesson isn't the miss itself but *why* it was missed: the fold
+      template was built and validated against the target that motivated
+      it, and the sweep re-confirmed recursion's seeds and the aggregate
+      list-op count, but never re-checked the *other* already-diagnosed
+      failure this same mechanism structurally overlapped with. Diagnosing
+      a failure and fixing it in the same session doesn't automatically
+      surface every other place the fix also applies - that still takes a
+      deliberate re-check, and this one waited for the next question rather
+      than being caught immediately. `test_synthesize_recovers_list_sum_via_fold`'s
+      docstring now records this directly.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
