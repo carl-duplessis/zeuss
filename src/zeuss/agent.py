@@ -24,10 +24,13 @@ directions are registered, and offering every known-open neighbor as a move
 candidate (regardless of whether it makes progress) causes the agent to thrash
 forever between two rooms connected by an always-open door.
 
-Tier4 program synthesis is deliberately not used here: it operates over plain
-dict/list inputs with no representation for hypervectors or fuzzy valuations,
-so bridging it into this loop needs its own domain-terms design, not glue that
-falls out of the existing APIs the way everything below does.
+Tier4 program synthesis *is* used, in exactly one place:
+``candidate_actions``'s open/closed classification of a door's belief is two
+genetically-synthesized predicates (``is_door_open``/``is_door_closed``), not
+hand-written comparisons - see the "Tier4 bridge" section below for why this
+needed a different DSL framing than a naive "synthesize a threshold" attempt,
+and for a real reliability trap (underdetermined training examples) found and
+fixed the same way the tier4 list-op audit found and fixed its own.
 """
 from __future__ import annotations
 
@@ -43,11 +46,92 @@ from .tier2_substrate.hypervectors import Codebook, bind, random_hypervector
 from .tier3_logic.compiler import Rule, Theory
 from .tier3_logic.grounding import compile_theory, readout
 from .tier3_logic.ontology import Ontology
+from .tier4_synthesis.dsl import Fuel, Node, evaluate
+from .tier4_synthesis.search import Example, synthesize
 
 # Above this readout, a door is believed open enough to move through.
 OPEN_THRESHOLD = 0.65
 # Below this readout, a door is believed closed enough to stop considering it.
 CLOSED_THRESHOLD = 0.35
+
+
+# --- Tier4 bridge: candidate_actions' open/closed classification is two
+# genetically-synthesized predicates, not hand-written comparisons -------
+#
+# First DSL framing tried and rejected: synthesize a single
+# ``classify(belief) -> {-1, 0, 1}`` function with the thresholds baked in as
+# literal constants. This does not work at all - `search.py`'s leaf-constant
+# pool (`_LEAF_CONSTS = (0, 1, 2, 3, True, False)`) has no way to produce a
+# literal like ``0.35``, so the search can never express the comparison it
+# needs. Fixed by passing the thresholds in as *input variables* instead of
+# expecting the search to invent them as constants - the search then only
+# has to discover the comparison *structure*, never a novel numeric literal.
+#
+# Second framing tried and found unreliable, not just assumed reliable: one
+# function computing all three classes at once
+# (``If(belief < closed, -1, If(belief > open, 1, 0))``) measured at only
+# 7/10 seeds even at a generous budget (400/100/depth4) - a two-threshold,
+# three-way decision boundary is a harder combinatorial target than it looks.
+# Decomposed into two independent single-comparison predicates instead
+# (`is_door_open`/`is_door_closed`), each of which converges in 1-2
+# generations and measured 30/30 seeds at a much smaller budget - a single
+# comparison is a dramatically easier target, and the two predicates can
+# never actually contradict each other since `OPEN_THRESHOLD` and
+# `CLOSED_THRESHOLD` don't overlap.
+#
+# A real reliability trap found in *that* version, the same shape as the
+# tier4 list-op audit's Class A failures (docs/ROADMAP.md v0.22): training
+# examples that skip the exact threshold value and the ``belief == 0.0``
+# edge (falsy in Python, so an `If(belief, ...)`-shaped coincidental program
+# can slip through unnoticed) left ~1/10 seeds "verified" on a
+# non-generalizing program - e.g. `belief > threshold` instead of
+# `belief >= threshold`, indistinguishable on a training set with no point
+# exactly at the threshold. Fixed the same way the list-op audit was: adding
+# examples at the exact threshold and at 0.0/1.0, not by adding search-side
+# machinery - measured at 30/30 seeds after the fix, not assumed safe.
+_CLASSIFIER_SEED = 1
+_classifier_cache: dict[str, Node] = {}
+
+
+def _open_classifier_examples() -> list[Example]:
+    beliefs = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, OPEN_THRESHOLD, 0.7, 0.8, 0.9, 1.0]
+    return [Example({"belief": b, "threshold": OPEN_THRESHOLD}, b >= OPEN_THRESHOLD) for b in beliefs]
+
+
+def _closed_classifier_examples() -> list[Example]:
+    beliefs = [0.0, 0.1, 0.2, 0.3, CLOSED_THRESHOLD, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    return [Example({"belief": b, "threshold": CLOSED_THRESHOLD}, b <= CLOSED_THRESHOLD) for b in beliefs]
+
+
+def synthesize_door_predicate(examples: list[Example], seed: int = _CLASSIFIER_SEED) -> Node:
+    """Synthesize one belief-vs-threshold predicate. Raises if it fails to
+    verify - `_CLASSIFIER_SEED` is a measured-reliable choice (30/30 seeds
+    swept for both predicates at this exact configuration), not a hopeful
+    default, so a raise here means the DSL/search itself regressed, not that
+    this call needs a retry."""
+    rng = np.random.default_rng(seed)
+    best, _trace, verified = synthesize(
+        ["belief", "threshold"], examples, population_size=200, max_generations=60, max_depth=2, rng=rng
+    )
+    if not verified:
+        raise RuntimeError("door predicate failed to synthesize and verify - see agent.py's tier4 bridge comment")
+    return best
+
+
+def _cached_classifier(key: str, examples_fn) -> Node:
+    if key not in _classifier_cache:
+        _classifier_cache[key] = synthesize_door_predicate(examples_fn())
+    return _classifier_cache[key]
+
+
+def is_door_open(belief: float) -> bool:
+    node = _cached_classifier("open", _open_classifier_examples)
+    return bool(evaluate(node, {"belief": belief, "threshold": OPEN_THRESHOLD}, Fuel(200)))
+
+
+def is_door_closed(belief: float) -> bool:
+    node = _cached_classifier("closed", _closed_classifier_examples)
+    return bool(evaluate(node, {"belief": belief, "threshold": CLOSED_THRESHOLD}, Fuel(200)))
 
 
 @dataclass
@@ -323,11 +407,11 @@ def candidate_actions(
             continue
         door = world.door_between(current_room, neighbor)
         belief = beliefs.get(door.name, 0.5)
-        if belief >= OPEN_THRESHOLD:
+        if is_door_open(belief):
             name = f"move_to_{neighbor}"
             actions.append(Action(name, world.onto.entity(neighbor), is_discovery=False))
             meta[name] = ("move", neighbor)
-        elif belief > CLOSED_THRESHOLD:
+        elif not is_door_closed(belief):
             # Ambiguous - worth probing, since it would be a forward
             # improvement if it turns out to be open. Effect is the door
             # variable's own TRUE pole (the same wave grounding.readout
@@ -339,7 +423,7 @@ def candidate_actions(
             name = f"probe_{door.name}"
             actions.append(Action(name, true_pole, is_discovery=True))
             meta[name] = ("probe", door.name)
-        # belief <= CLOSED_THRESHOLD: confirmed closed, no candidate at all.
+        # is_door_closed(belief): confirmed closed, no candidate at all.
     missing_params = not any(kind == "move" for kind, _ in meta.values())
     return actions, meta, missing_params
 

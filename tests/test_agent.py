@@ -19,12 +19,53 @@ from zeuss.agent import (
     demo_world,
     distance_weighted_goal_landscape,
     door_beliefs,
+    is_door_closed,
+    is_door_open,
+    synthesize_door_predicate,
+    _closed_classifier_examples,
+    _open_classifier_examples,
 )
 from zeuss.tier2_substrate.energy import settle
 from zeuss.tier2_substrate.hypervectors import Codebook, random_hypervector
 from zeuss.tier3_logic.grounding import compile_theory, readout
+from zeuss.tier4_synthesis.dsl import Fuel, evaluate
 
 # --- unit tests --------------------------------------------------------
+
+
+def test_door_predicates_are_synthesized_and_verified():
+    """synthesize_door_predicate raises if the search fails to verify - this
+    just confirms the two predicates agent.py actually uses come from a
+    real, successful synthesis run at import/first-use time, not that some
+    hand-written fallback silently took over."""
+    open_node = synthesize_door_predicate(_open_classifier_examples())
+    closed_node = synthesize_door_predicate(_closed_classifier_examples())
+    for example in _open_classifier_examples():
+        assert evaluate(open_node, example.inputs, Fuel(200)) == example.expected_output
+    for example in _closed_classifier_examples():
+        assert evaluate(closed_node, example.inputs, Fuel(200)) == example.expected_output
+
+
+def test_door_predicates_match_hardcoded_thresholds_across_boundary():
+    """The synthesized predicates must agree with OPEN_THRESHOLD/
+    CLOSED_THRESHOLD's own semantics (>=/<=) at the exact boundary values,
+    not just somewhere in the neighborhood - the exact failure mode found
+    during development (see agent.py's tier4-bridge comment) was a
+    coincidental predicate that matched every *training* point but used the
+    wrong comparison operator right at the threshold itself."""
+    for b in (0.0, 0.1, 0.34, 0.35, 0.36, 0.5, 0.64, 0.65, 0.66, 0.9, 1.0):
+        assert is_door_open(b) == (b >= OPEN_THRESHOLD), f"belief={b}"
+        assert is_door_closed(b) == (b <= CLOSED_THRESHOLD), f"belief={b}"
+
+
+def test_door_predicates_are_mutually_exclusive():
+    """Never both open and closed at once - true by construction since
+    OPEN_THRESHOLD > CLOSED_THRESHOLD, checked directly across a fine grid
+    rather than assumed from the two independently-synthesized predicates
+    happening to agree."""
+    for i in range(101):
+        b = i / 100.0
+        assert not (is_door_open(b) and is_door_closed(b)), f"belief={b}"
 
 
 def test_believe_doors_biconditional_pulls_toward_sensor_in_both_directions():

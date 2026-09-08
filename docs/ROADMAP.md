@@ -966,6 +966,61 @@
       everything above did.
 
 
+## v0.26 — the tier4 bridge: agent decisions synthesized, not hand-written
+
+- [x] Closed the v0.25 stretch goal: `candidate_actions`'s open/closed belief
+      classification is now two genetically-synthesized predicates
+      (`is_door_open`/`is_door_closed`), not hand-written threshold
+      comparisons - the first real bridge between tier4_synthesis and
+      anything outside its own toy arithmetic/list-op targets. No existing
+      tier module changed; `OPEN_THRESHOLD`/`CLOSED_THRESHOLD` stay as the
+      source of truth for building the training examples, they just no
+      longer gate the runtime decision directly.
+- [x] First DSL framing tried and rejected outright, not just found
+      unreliable: synthesize one `classify(belief) -> {-1,0,1}` function with
+      the thresholds baked in as literal constants. Cannot work at all -
+      `search.py`'s leaf-constant pool (`_LEAF_CONSTS = (0,1,2,3,True,False)`)
+      has no way to produce a literal like `0.35`, so the search can never
+      express the needed comparison. Fixed by passing the thresholds in as
+      *input variables* instead of expecting the search to invent them as
+      constants - the search then only has to discover the comparison
+      *structure*.
+- [x] Second framing tried and measured, not assumed reliable: one function
+      computing all three classes at once
+      (`If(belief < closed, -1, If(belief > open, 1, 0))`). Measured at only
+      7/10 seeds even at a generous budget (400 population/100 generations/
+      depth 4) - a two-threshold three-way decision boundary is a harder
+      combinatorial target than it looks, the kind of thing this session's
+      whole synthesis-hardening arc (v0.14-v0.24) exists to catch rather
+      than assume away. Decomposed into two independent single-comparison
+      predicates instead - each converges in 1-2 generations at a much
+      smaller budget (population 200/generations 60/depth 2) and measured
+      **30/30 seeds** for both. The two predicates can never actually
+      contradict each other, since `OPEN_THRESHOLD > CLOSED_THRESHOLD` by
+      construction - checked directly across a fine belief grid, not
+      assumed from the thresholds not overlapping.
+- [x] A real reliability trap found in the decomposed version, the same
+      shape as the tier4 list-op audit's Class A failures (v0.22): training
+      examples that skipped the exact threshold value and the `belief==0.0`
+      edge (falsy in Python, letting an `If(belief, ...)`-shaped coincidental
+      program slip through unnoticed) left ~1/10 seeds "verified" on a
+      non-generalizing program - e.g. `belief > threshold` synthesized
+      instead of `belief >= threshold`, indistinguishable on a training set
+      with no point exactly at the threshold. Fixed the same way the list-op
+      audit was fixed: added examples at the exact threshold and at 0.0/1.0,
+      not new search-side machinery - remeasured at 30/30 after the fix.
+- [x] Verified the swap is behavior-preserving, not just "also works": the
+      full pre-existing 3-scenario x 8-seed agent suite (v0.25, 100% bar)
+      passes unchanged after routing through the synthesized predicates
+      instead of the raw comparisons, and `python -m zeuss agent`'s printed
+      trace is bit-for-bit identical to the pre-bridge version. Added
+      `tests/test_agent.py` coverage for the bridge itself: the predicates
+      verify against their own training set, match the hardcoded thresholds'
+      `>=`/`<=` semantics across the exact boundary (the precise failure
+      mode found above), and are mutually exclusive across a fine grid.
+      Full suite: 145 passed, 10 skipped (was 142); demo unaffected.
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

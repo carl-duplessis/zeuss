@@ -267,10 +267,12 @@ def _agent() -> int:
     print(f"detour   (hall-annex) ended up believed: {ha:.2f}  (ground truth: open)")
     print(
         "\n(Composes tier3_logic.grounding.compile_theory/settle/readout for belief "
-        "update, qa.ask for room-kind lookup, and drive.select_action - twice per "
-        "tick, once against a goal Landscape built from Ontology room waves, once "
-        "against the compiled belief Landscape when a door needs probing - see "
-        "src/zeuss/agent.py and docs/ROADMAP.md for the full design.)"
+        "update, qa.ask for room-kind lookup, drive.select_action - twice per tick, "
+        "once against a goal Landscape built from Ontology room waves, once against "
+        "the compiled belief Landscape when a door needs probing - and tier4_synthesis: "
+        "the open/closed belief classification itself is two genetically-synthesized "
+        "predicates, not hand-written comparisons. See src/zeuss/agent.py and "
+        "docs/ROADMAP.md for the full design.)"
     )
     return 0
 
