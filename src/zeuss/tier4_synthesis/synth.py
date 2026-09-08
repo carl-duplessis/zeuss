@@ -29,6 +29,7 @@ def synthesize(
     max_generations: int = 60,
     max_depth: int = 4,
     allow_recursion: bool = False,
+    allow_bool_template: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     rng: np.random.Generator | None = None,
@@ -45,6 +46,12 @@ def synthesize(
     before reaching a correct answer, even when the candidate is actually
     correct (see :func:`.search.program_energy`'s docstring).
 
+    ``allow_bool_template`` opts into a structural bias toward compound
+    boolean formulas (``AND``/``OR`` of modular-arithmetic comparisons - see
+    :data:`.search.BOOL_TEMPLATE_CATEGORIES`), off by default for the same
+    diversity-dilution reason ``allow_recursion`` is - it's a separate opt-in
+    from ``allow_recursion`` (a target can request either, both, or neither).
+
     Returns ``(best_node, beta_trace, verified)`` - see :func:`.search.synthesize`.
     """
     return _synthesize(
@@ -55,6 +62,7 @@ def synthesize(
         max_generations=max_generations,
         max_depth=max_depth,
         allow_recursion=allow_recursion,
+        allow_bool_template=allow_bool_template,
         resonant_bias=resonant_bias,
         fuel_budget=fuel_budget,
         rng=rng,

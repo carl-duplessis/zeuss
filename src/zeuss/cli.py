@@ -235,6 +235,37 @@ def _synth() -> int:
         "fixable-with-more-data problem - see docs/ROADMAP.md v0.16/v0.17.)"
     )
 
+    print("\nScenario 5: f(year) = is_leap_year(year), the real Gregorian rule, from 21")
+    print("real historical years (a compound boolean formula - AND of a check and an OR")
+    print("of two more checks - the first real, non-toy problem this project pointed")
+    print("synthesis at)")
+    leap_years = [
+        2023, 2021, 2019, 1999, 2001, 2024, 1996, 2004, 1988, 2012, 2020, 1980,
+        1900, 1800, 1700, 2100, 2200, 2300, 2000, 1600, 2400,
+    ]
+    leap_examples = [
+        Example({"year": y}, y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) for y in leap_years
+    ]
+    rng5 = np.random.default_rng(0)
+    best5, beta_trace5, verified5 = synthesize(
+        ["year"], leap_examples, population_size=300, max_generations=150, max_depth=4,
+        allow_bool_template=True, rng=rng5,
+    )
+    print(f"population=300, allow_bool_template=True, ran {len(beta_trace5)} generation(s)")
+    print(f"winning program: {describe(best5)}")
+    print(f"verified against training examples: {verified5}")
+    for year, expected in [(2028, True), (1904, True), (2100, False), (2000, True), (2044, True)]:
+        result = evaluate(best5, {"year": year}, Fuel(200))
+        print(f"  is_leap_year({year}) -> {result}  (expected {expected})  {'OK' if result == expected else 'MISMATCH'}")
+    print(
+        "(This target reliably failed before search.py grew a third structural "
+        "template, _bool_template - the search converged instead to 'year is even', "
+        "a coincidence satisfying every training example except the real century "
+        "exceptions, with no smooth gradient to the true structure. Reliable across "
+        "seeds 0-7 at this configuration; a wider sweep found one further seed with "
+        "a different, also-explained local optimum - see docs/ROADMAP.md.)"
+    )
+
     print(
         "\n(This is example-based verification within a closed, total DSL - "
         "not a formal proof of correctness for all possible inputs.)"

@@ -544,6 +544,239 @@ def extract_fold_template_choices(node: Node) -> dict | None:
     return choices
 
 
+# A structural template for compound boolean formulas - built after the
+# Gregorian leap-year rule (year%4==0 and (year%100!=0 or year%400==0))
+# turned out to be a genuine deceptive-fitness-landscape trap for blind
+# growth: the search reliably converges to `not (year % 2)` ("is even"), a
+# local optimum that satisfies every training example except the real
+# century exceptions, with no smooth gradient from there to the true
+# 4-clause structure. Confirmed by measurement, not assumed, that this is a
+# structural problem rather than a budget one: 0/5 seeds verified at
+# population=300/generations=80/depth=4; *adding more* century-exception
+# training examples made it worse (0/8, some seeds not even reaching the
+# "is even" energy); population=1000/generations=100/depth=6 still converged
+# to exactly the same "is even" energy. Same character of problem
+# _recursive_template and _fold_template were each built to solve.
+#
+# "shape_kind" picks one of four canonical 2-3-atom and/or compositions -
+# drawn uniformly, never resonance-biased, for the same reason combine_kind/
+# base_kind are excluded from bias in _recursive_template: it changes which
+# sub-expressions exist at all, not a value within an already-fixed shape.
+# Unlike combine_kind there's no asymmetric-failure-cost reason to anneal a
+# schedule here (all four shapes are equal-cost BinOp compositions, no
+# recursion, no exponential blowup), so a flat uniform draw is enough.
+# "and_or3" is the leap-year target's literal shape
+# (AND(atom, OR(atom, atom))); "or_and3" is not padding for symmetry - it is
+# leap year's standard boolean-algebra dual (A&(B|C) == (A&B)|(A&C),
+# specialized via year%400==0 implying year%100==0:
+# OR(year%400==0, AND(year%4==0, year%100!=0))) - so the target is reachable
+# through two independent structural doors, not one. "and2"/"or2" cover
+# simpler compound targets (e.g. "divisible by both 3 and 5") and give the
+# search bias an easy, fast-converging calibration case before the harder
+# 3-atom shapes need it, the same role plain sum plays for the fold bias.
+# "NOT" is deliberately not a shape: "!=" already gives negation where it
+# matters, UnaryOp("not", ...) is already reachable by ordinary blind growth
+# wrapping any subtree, and doubling the shape-matching surface for no
+# capability gain matches this module's own tried-and-reverted pattern for
+# unjustified complexity (see the abandoned independent step2 mentioned in
+# _recursive_template's docstring).
+#
+# An atom is (Var(var) % Const(modulus)) CMP Const(const) - "modulus"/"cmp"/
+# "const" are the tunable, resonance-biased holes. "modulus" is a curated
+# list, not a derived range, for the same reason TEMPLATE_CATEGORIES["step"]
+# is [1,2]: 2/3/5/7 cover parity/FizzBuzz/weekday-style small divisors,
+# 4/100/400 are the exact three moduli leap year needs. "const" is
+# non-negative only (unlike FOLD_TEMPLATE_CATEGORIES["const"], which can be
+# negative): an atom compares against a modulus residue, which Python's `%`
+# always returns non-negative for a positive modulus, so a negative const
+# would be a dead, always-true-or-false atom - wasted search space, not
+# useful expressiveness. The _LEAF_CONSTS constant-pool wall (no floats, no
+# arbitrary literal - see agent.py's synthesize_door_predicate, which hit
+# this same wall for a threshold like 0.35) is not a problem here: every
+# value in this category list is built directly into a Const, the same way
+# the other two templates build their own Consts directly - it never goes
+# through _leaf().
+BOOL_TEMPLATE_CATEGORIES: dict[str, list] = {
+    "shape_kind": ["and2", "or2", "and_or3", "or_and3"],
+    "modulus": [2, 3, 4, 5, 7, 100, 400],
+    "cmp": ["==", "!=", "<", "<=", ">", ">="],
+    "const": [0, 1, 2, 3, 4, 5, 6],
+}
+
+
+def _build_atom_node(var: str, atom: dict) -> Node:
+    return BinOp(atom["cmp"], BinOp("%", Var(var), Const(atom["modulus"])), Const(atom["const"]))
+
+
+def _build_bool_template_node(var: str, choices: dict) -> Node:
+    """Build the whole tree from a complete choices dict - no separate
+    "body vs. node" split the way _build_template_body/_build_fold_template_body
+    have: those exist specifically to preserve a non-hole wrapper (in_expr,
+    or init+list_expr) untouched during hole mutation. The bool template has
+    no such wrapper - the entire returned node *is* the hole-filled region -
+    so a single rebuild-everything builder is both correct and simpler."""
+    atoms = choices["atoms"]
+    shape = choices["shape_kind"]
+    a0 = _build_atom_node(var, atoms[0])
+    a1 = _build_atom_node(var, atoms[1])
+    if shape == "and2":
+        return BinOp("and", a0, a1)
+    if shape == "or2":
+        return BinOp("or", a0, a1)
+    a2 = _build_atom_node(var, atoms[2])
+    if shape == "and_or3":
+        return BinOp("and", a0, BinOp("or", a1, a2))
+    return BinOp("or", a0, BinOp("and", a1, a2))  # or_and3
+
+
+def _bool_template(
+    inputs: list[str],
+    list_inputs: tuple[str, ...],
+    rng: np.random.Generator,
+    bias: "ResonantBias | None" = None,
+) -> tuple[Node, dict] | tuple[None, None]:
+    """A structural bias toward compound boolean formulas - see
+    :data:`BOOL_TEMPLATE_CATEGORIES` for the shape/atom vocabulary. Returns
+    ``(None, None)`` if there's no scalar input. All atoms share one
+    variable, drawn once per template instance (like
+    :func:`_recursive_template`'s ``seed_var``/:func:`_fold_template`'s
+    ``list_name`` - a name, not a hole-filler) - the motivating target has
+    exactly one scalar input, so independent per-atom variables would be
+    untested complexity it doesn't need. If ``bias`` is given, each atom's
+    ``modulus``/``cmp``/``const`` are drawn from it instead of uniformly at
+    random - mirrors the other two templates' bias/no-bias split exactly."""
+    scalars = [n for n in inputs if n not in list_inputs]
+    if not scalars:
+        return None, None
+    var = str(rng.choice(scalars))
+    shape = str(rng.choice(BOOL_TEMPLATE_CATEGORIES["shape_kind"]))
+    n_atoms = 2 if shape in ("and2", "or2") else 3
+    atoms = []
+    for _ in range(n_atoms):
+        if bias is not None:
+            atoms.append(
+                {"modulus": bias.sample("modulus", rng), "cmp": bias.sample("cmp", rng), "const": bias.sample("const", rng)}
+            )
+        else:
+            atoms.append(
+                {
+                    "modulus": int(rng.choice(BOOL_TEMPLATE_CATEGORIES["modulus"])),
+                    "cmp": str(rng.choice(BOOL_TEMPLATE_CATEGORIES["cmp"])),
+                    "const": int(rng.choice(BOOL_TEMPLATE_CATEGORIES["const"])),
+                }
+            )
+    choices = {"shape_kind": shape, "atoms": atoms}
+    return _build_bool_template_node(var, choices), choices
+
+
+_BOOL_TUNABLE_HOLES = ("modulus", "cmp", "const")
+
+
+def _uniform_bool_hole(key: str, rng: np.random.Generator):
+    options = BOOL_TEMPLATE_CATEGORIES[key]
+    value = options[int(rng.integers(0, len(options)))]
+    return int(value) if key in ("modulus", "const") else str(value)
+
+
+def _mutate_bool_template_hole(node: Node, rng: np.random.Generator, bias: "ResonantBias | None") -> Node | None:
+    """The bool-template counterpart to :func:`_mutate_fold_template_hole`:
+    redraw exactly one tunable hole of exactly one atom in place. Returns
+    ``None`` if ``node`` doesn't structurally match the bool template shape."""
+    choices = extract_bool_template_choices(node)
+    if choices is None:
+        return None
+    var = _bool_template_var(node)
+    if var is None:
+        return None
+    atom_idx = int(rng.integers(0, len(choices["atoms"])))
+    key = _BOOL_TUNABLE_HOLES[int(rng.integers(0, len(_BOOL_TUNABLE_HOLES)))]
+    new_choices = {"shape_kind": choices["shape_kind"], "atoms": [dict(a) for a in choices["atoms"]]}
+    new_choices["atoms"][atom_idx][key] = bias.sample(key, rng) if bias is not None else _uniform_bool_hole(key, rng)
+    return _build_bool_template_node(var, new_choices)
+
+
+def _match_atom(node: Node, var: str) -> dict | None:
+    """If ``node`` is ``(Var(var) % Const(modulus)) CMP Const(const)``,
+    return ``{"modulus", "cmp", "const"}``; else ``None``."""
+    if not isinstance(node, BinOp) or node.op not in BOOL_TEMPLATE_CATEGORIES["cmp"]:
+        return None
+    left, right = node.left, node.right
+    if not (
+        isinstance(left, BinOp)
+        and left.op == "%"
+        and isinstance(left.left, Var)
+        and left.left.name == var
+        and isinstance(left.right, Const)
+    ):
+        return None
+    if not isinstance(right, Const):
+        return None
+    return {"modulus": left.right.value, "cmp": node.op, "const": right.value}
+
+
+def _bool_template_var(node: Node) -> str | None:
+    """The shared variable name every atom in a bool-template-shaped
+    ``node`` refers to, or ``None`` if ``node`` doesn't match at all -
+    extracted once, up front, so :func:`extract_bool_template_choices` and
+    :func:`_mutate_bool_template_hole` don't each re-derive it."""
+    candidates: list[Node] = []
+    if isinstance(node, BinOp) and node.op in ("and", "or"):
+        candidates.append(node.left)
+        if isinstance(node.right, BinOp) and node.right.op in ("and", "or"):
+            candidates.append(node.right.left)
+            candidates.append(node.right.right)
+        else:
+            candidates.append(node.right)
+    for candidate in candidates:
+        if (
+            isinstance(candidate, BinOp)
+            and isinstance(candidate.left, BinOp)
+            and candidate.left.op == "%"
+            and isinstance(candidate.left.left, Var)
+        ):
+            return candidate.left.left.name
+    return None
+
+
+def extract_bool_template_choices(node: Node) -> dict | None:
+    """If ``node`` structurally matches one of the four bool template shapes
+    (see :func:`_bool_template`) - regardless of whether it came from the
+    template generator or was evolved into that shape by ordinary mutation/
+    crossover - extract its hole-fillers for :meth:`ResonantBias.reinforce`.
+    Returns ``None`` if it doesn't match any shape, or if it matches
+    structurally but the shared variable differs between atoms (blind
+    growth/crossover can produce that; it isn't a shape this template
+    reinforces or refines)."""
+    if not isinstance(node, BinOp) or node.op not in ("and", "or"):
+        return None
+    var = _bool_template_var(node)
+    if var is None:
+        return None
+    a0 = _match_atom(node.left, var)
+    if a0 is None:
+        return None
+    if isinstance(node.right, BinOp) and node.right.op in ("and", "or") and node.right.op != node.op:
+        a1 = _match_atom(node.right.left, var)
+        a2 = _match_atom(node.right.right, var)
+        if a1 is None or a2 is None:
+            return None
+        shape = "and_or3" if node.op == "and" else "or_and3"
+        atoms = [a0, a1, a2]
+    else:
+        a1 = _match_atom(node.right, var)
+        if a1 is None:
+            return None
+        shape = "and2" if node.op == "and" else "or2"
+        atoms = [a0, a1]
+
+    if shape not in BOOL_TEMPLATE_CATEGORIES["shape_kind"]:
+        return None
+    for atom in atoms:
+        if any(atom[k] not in BOOL_TEMPLATE_CATEGORIES[k] for k in atom):
+            return None
+    return {"shape_kind": shape, "atoms": atoms}
+
+
 # Hole categories a template's *value* (not its structural family) is built
 # from - the ones _mutate_template_hole is allowed to retarget one at a time.
 # Mirrors _recursive_template's own bias/no-bias split: combine_kind, delta,
@@ -606,6 +839,11 @@ _TEMPLATE_HOLE_MUTATION_RATE = 0.5
 # needs a different rate, and re-using the value already validated
 # against a full seed sweep is safer than guessing a new one.
 _FOLD_TEMPLATE_HOLE_MUTATION_RATE = 0.5
+
+# The bool-template counterpart. Same reasoning again: no evidence this
+# template's hole space (three tunable holes per atom, 2-3 atoms) needs a
+# different rate from the two already validated at 0.5.
+_BOOL_TEMPLATE_HOLE_MUTATION_RATE = 0.5
 
 
 def _mutate_template_hole(node: Node, rng: np.random.Generator, bias: "ResonantBias | None") -> Node | None:
@@ -749,6 +987,8 @@ def random_program(
     bias: ResonantBias | None = None,
     delta_p1: float = 0.15,
     fold_bias: "ResonantBias | None" = None,
+    allow_bool_template: bool = False,
+    bool_bias: "ResonantBias | None" = None,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -771,6 +1011,17 @@ def random_program(
     recursion template so the two never compete for the same draw when both
     are available (recursion synthesis and list-op synthesis are not
     currently combined in any committed target).
+
+    ``allow_bool_template``, if set, is a *third* independent opt-in (checked
+    last), for :func:`_bool_template` (compound boolean formulas over
+    :data:`BOOL_TEMPLATE_CATEGORIES`). Unlike ``fold_bias``'s self-selecting
+    ``if list_inputs`` gate, this needs its own flag: a bool template's
+    activation condition ("has a scalar input") is true for almost every
+    call, so leaving it unconditionally live would waste ``template_rate``
+    draws on and/or skeletons for plain arithmetic targets - the same
+    diversity-dilution concern that made ``allow_recursion`` itself opt-in,
+    even though (unlike recursion) a bool candidate is cheap to evaluate.
+    ``bool_bias`` mirrors ``bias``/``fold_bias`` for this third template.
     """
     if allow_recursion and template_rate > 0 and rng.random() < template_rate:
         template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias, delta_p1)
@@ -780,6 +1031,10 @@ def random_program(
         fold_template, _fold_choices = _fold_template(tuple(list_inputs), rng, fold_bias)
         if fold_template is not None:
             return fold_template
+    if allow_bool_template and template_rate > 0 and rng.random() < template_rate:
+        bool_template, _bool_choices = _bool_template(inputs, tuple(list_inputs), rng, bool_bias)
+        if bool_template is not None:
+            return bool_template
     return _grow(list(inputs), tuple(list_inputs), (), rng, max_depth, allow_recursion)
 
 
@@ -831,14 +1086,17 @@ def _replace_at_scoped(
     bias: ResonantBias | None = None,
     delta_p1: float = 0.15,
     fold_bias: "ResonantBias | None" = None,
+    allow_bool_template: bool = False,
+    bool_bias: "ResonantBias | None" = None,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
     mirroring how :func:`_grow` would have built that subtree in the first
     place, so a mutation that introduces e.g. a fresh ``Recur`` call has a
     real chance of being well-scoped rather than an (safely, but uselessly)
-    unbound-name penalty. ``fold_bias`` mirrors ``bias`` for
-    :func:`_fold_template` - see :func:`random_program`'s docstring."""
+    unbound-name penalty. ``fold_bias``/``allow_bool_template``/``bool_bias``
+    mirror ``bias`` for :func:`_fold_template`/:func:`_bool_template` - see
+    :func:`random_program`'s docstring."""
     idx = counter[0]
     counter[0] += 1
     if idx == target_index:
@@ -850,6 +1108,10 @@ def _replace_at_scoped(
             fold_node, _fold_choices = _fold_template(list_inputs, rng, fold_bias)
             if fold_node is not None:
                 return fold_node
+        if allow_bool_template and template_rate > 0 and rng.random() < template_rate:
+            bool_node, _bool_choices = _bool_template(inputs, list_inputs, rng, bool_bias)
+            if bool_node is not None:
+                return bool_node
         return _grow(inputs, list_inputs, recur_ctx, rng, max(1, max_depth - 1), allow_recursion)
 
     scalars = [n for n in inputs if n not in list_inputs]
@@ -859,6 +1121,8 @@ def _replace_at_scoped(
         "bias": bias,
         "delta_p1": delta_p1,
         "fold_bias": fold_bias,
+        "allow_bool_template": allow_bool_template,
+        "bool_bias": bool_bias,
     }
 
     if isinstance(node, Let):
@@ -937,6 +1201,8 @@ def mutate(
     bias: ResonantBias | None = None,
     delta_p1: float = 0.15,
     fold_bias: "ResonantBias | None" = None,
+    allow_bool_template: bool = False,
+    bool_bias: "ResonantBias | None" = None,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring).
@@ -963,7 +1229,15 @@ def mutate(
     The same split applies, independently, to the fold template
     (:data:`_FOLD_TEMPLATE_HOLE_MUTATION_RATE`, :func:`_mutate_fold_template_hole`)
     when ``node`` is ``Fold``-shaped - not gated on ``allow_recursion``, since
-    fold synthesis is orthogonal to recursion synthesis.
+    fold synthesis is orthogonal to recursion synthesis. The bool template
+    (:data:`_BOOL_TEMPLATE_HOLE_MUTATION_RATE`, :func:`_mutate_bool_template_hole`)
+    gets the same split too, but *is* gated on its own ``allow_bool_template``
+    flag rather than an ``isinstance`` check: unlike ``Fold``, a bool-
+    template-shaped node is just an ordinary ``BinOp`` (the same node type as
+    any arithmetic/comparison expression), so there's no type to key off of -
+    gating on the flag keeps ``allow_bool_template=False`` meaning "off"
+    cleanly, the same way ``allow_recursion`` gates both its own entry points
+    together.
     """
     if allow_recursion and rng.random() < _TEMPLATE_HOLE_MUTATION_RATE:
         hole_mutated = _mutate_template_hole(node, rng, bias)
@@ -973,6 +1247,10 @@ def mutate(
         fold_hole_mutated = _mutate_fold_template_hole(node, rng, fold_bias)
         if fold_hole_mutated is not None:
             return fold_hole_mutated
+    if allow_bool_template and rng.random() < _BOOL_TEMPLATE_HOLE_MUTATION_RATE:
+        bool_hole_mutated = _mutate_bool_template_hole(node, rng, bool_bias)
+        if bool_hole_mutated is not None:
+            return bool_hole_mutated
     n = count_nodes(node)
     target = int(rng.integers(0, n))
     return _replace_at_scoped(
@@ -989,6 +1267,8 @@ def mutate(
         bias=bias,
         delta_p1=delta_p1,
         fold_bias=fold_bias,
+        allow_bool_template=allow_bool_template,
+        bool_bias=bool_bias,
     )
 
 
@@ -1067,6 +1347,7 @@ def synthesize(
     parsimony: float = 0.02,
     allow_recursion: bool = False,
     template_rate: float = 0.15,
+    allow_bool_template: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     delta_p1_start: float = 0.15,
@@ -1152,12 +1433,19 @@ def synthesize(
     if list_inputs and resonant_bias:
         fold_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
         fold_bias = ResonantBias(fold_bias_codebook, FOLD_TEMPLATE_CATEGORIES)
+    bool_bias: ResonantBias | None = None
+    if allow_bool_template and resonant_bias:
+        bool_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+        bool_bias = ResonantBias(bool_bias_codebook, BOOL_TEMPLATE_CATEGORIES)
 
     delta_p1 = delta_p1_start
     stagnation = 0
     restart_threshold = max(1, int(max_generations * _RESTART_STAGNATION_FRACTION))
     population = [
-        random_program(inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias)
+        random_program(
+            inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
+            allow_bool_template, bool_bias,
+        )
         for _ in range(population_size)
     ]
 
@@ -1168,6 +1456,8 @@ def synthesize(
     best_template_energy: dict[tuple[str, str], float] = {}
     best_fold_template_node: dict[tuple[str, str], Node] = {}
     best_fold_template_energy: dict[tuple[str, str], float] = {}
+    best_bool_template_node: dict[tuple[str, ...], Node] = {}
+    best_bool_template_energy: dict[tuple[str, ...], float] = {}
     beta = beta_start
     beta_trace: list[float] = []
 
@@ -1251,10 +1541,14 @@ def synthesize(
             if list_inputs and resonant_bias:
                 fold_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
                 fold_bias = ResonantBias(fold_bias_codebook, FOLD_TEMPLATE_CATEGORIES)
+            if allow_bool_template and resonant_bias:
+                bool_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+                bool_bias = ResonantBias(bool_bias_codebook, BOOL_TEMPLATE_CATEGORIES)
             delta_p1 = delta_p1_start
             population = [
                 random_program(
-                    inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias
+                    inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
+                    allow_bool_template, bool_bias,
                 )
                 for _ in range(population_size)
             ]
@@ -1262,6 +1556,8 @@ def synthesize(
             best_template_energy = {}
             best_fold_template_node = {}
             best_fold_template_energy = {}
+            best_bool_template_node = {}
+            best_bool_template_energy = {}
             attempt_best_energy = float("inf")
             stagnation = 0
             # beta is deliberately left untouched, not reset to beta_start:
@@ -1287,6 +1583,34 @@ def synthesize(
                 fold_choices = extract_fold_template_choices(p)
                 if fold_choices is not None:
                     fold_bias.reinforce(fold_choices, weight=float(np.exp(-e)))
+        if bool_bias is not None:
+            for p, e in zip(population, raw_energies):
+                bool_choices = extract_bool_template_choices(p)
+                if bool_choices is None:
+                    continue
+                weight = float(np.exp(-e))
+                # shape_kind is not itself resonance-biased (see
+                # BOOL_TEMPLATE_CATEGORIES's comment) but is still passed
+                # through, same as combine_kind/base_kind/combine_op/
+                # item_kind already are for the other two templates -
+                # ResonantBias.reinforce only ever accumulates categories
+                # .sample() is later called for, so this is a harmless,
+                # already-established dead write, not new behavior.
+                bool_bias.reinforce({"shape_kind": bool_choices["shape_kind"]}, weight=weight)
+                # modulus/cmp/const are reinforced once *per atom*, not once
+                # per individual, since 2-3 atoms share these category names
+                # (they aren't indexed by atom position - positions are
+                # interchangeable under AND/OR). This gives them 2-3x the
+                # reinforcement weight shape_kind gets, per individual - a
+                # real imbalance the other two templates don't have (each of
+                # their tunable holes is a true singleton per individual).
+                # Built this simple way first and validated by the leap-year
+                # reliability sweep (docs/ROADMAP.md) rather than guessing a
+                # correction was needed; the documented fallback if it ever
+                # causes measured unreliability is reinforcing only one
+                # randomly-chosen atom's triple per individual instead.
+                for atom in bool_choices["atoms"]:
+                    bool_bias.reinforce(atom, weight=weight)
 
         # Template elitism: track the best template-shaped individual *per
         # structural family* (combine_kind, base_kind), not one single best
@@ -1329,6 +1653,23 @@ def synthesize(
                     best_fold_template_energy[fold_key] = float(e)
                     best_fold_template_node[fold_key] = p
 
+        # Bool-template elitism, mirroring the recursion/fold elitism above -
+        # same "one family locking out a sibling family" failure mode is
+        # possible here too, e.g. and2 hitting a lucky coincidence starving
+        # and_or3 out of its own protected slot before it gets a fair chance.
+        # Keyed as a 1-tuple (only one structural axis, shape_kind, exists
+        # here, unlike fold's two) purely so this dict has the same
+        # dict[tuple[str, ...], Node] shape as the other two.
+        if allow_bool_template:
+            for p, e in zip(population, raw_energies):
+                bool_choices = extract_bool_template_choices(p)
+                if bool_choices is None:
+                    continue
+                bool_key = (bool_choices["shape_kind"],)
+                if e < best_bool_template_energy.get(bool_key, float("inf")) - 1e-9:
+                    best_bool_template_energy[bool_key] = float(e)
+                    best_bool_template_node[bool_key] = p
+
         sizes = np.array([count_nodes(p) for p in population], dtype=float)
         selection_energies = raw_energies + parsimony * sizes
         probs = softmax(-beta * selection_energies)
@@ -1365,7 +1706,7 @@ def synthesize(
             for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
                 refined = mutate(
                     template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
-                    delta_p1, fold_bias,
+                    delta_p1, fold_bias, allow_bool_template, bool_bias,
                 )
                 next_population.append(refined)
         for fold_template_node in best_fold_template_node.values():
@@ -1380,9 +1721,24 @@ def synthesize(
             for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
                 fold_refined = mutate(
                     fold_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
-                    delta_p1, fold_bias,
+                    delta_p1, fold_bias, allow_bool_template, bool_bias,
                 )
                 next_population.append(fold_refined)
+        for bool_template_node in best_bool_template_node.values():
+            if bool_template_node is population[idx_best] or len(next_population) >= population_size:
+                continue
+            next_population.append(bool_template_node)
+            # Same guaranteed-offspring reasoning as the recursion/fold
+            # elitism above - arguably more relevant here, since a 3-atom
+            # shape needs all three atoms simultaneously correct, exactly
+            # the kind of multi-field local optimum a frozen, refinement-free
+            # anchor could never escape on its own.
+            for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
+                bool_refined = mutate(
+                    bool_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
+                    delta_p1, fold_bias, allow_bool_template, bool_bias,
+                )
+                next_population.append(bool_refined)
         while len(next_population) < population_size:
             i, j = rng.choice(len(population), size=2, p=np.asarray(probs))
             if rng.random() < 0.5:
@@ -1390,7 +1746,7 @@ def synthesize(
             else:
                 child = mutate(
                     population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
-                    delta_p1, fold_bias,
+                    delta_p1, fold_bias, allow_bool_template, bool_bias,
                 )
             next_population.append(child)
         population = next_population

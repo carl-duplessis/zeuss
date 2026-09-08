@@ -1021,6 +1021,129 @@
       Full suite: 145 passed, 10 skipped (was 142); demo unaffected.
 
 
+## v0.27 — `_bool_template`: a third structural template, for a real problem
+
+- [x] The Gregorian leap-year rule (`year%4==0 and (year%100!=0 or
+      year%400==0)`) was chosen as the first real, non-toy problem for this
+      substrate's synthesis to solve. It reliably failed: the search
+      converged to `not (year % 2)` ("is even"), a deceptive local optimum
+      satisfying every training example except the two real century
+      exceptions, with no smooth gradient to the true structure. Measured,
+      not assumed, that this was a structural problem rather than a budget
+      one: 0/5 seeds verified at population=300/generations=80/depth=4;
+      *adding more* century-exception examples made it worse (0/8, some
+      seeds not even reaching the "is even" energy); population=1000/
+      generations=100 still converged to exactly the same "is even" energy.
+      Same character of problem `_recursive_template` (v0.14) and
+      `_fold_template` (v0.24) were each built to solve - so built a third
+      structural template, `_bool_template`, the same kind of fix.
+- [x] Design (properly planned via a dedicated Plan-mode session, not
+      improvised): `BOOL_TEMPLATE_CATEGORIES` - `shape_kind` (`and2`, `or2`,
+      `and_or3`, `or_and3` - structural, uniform, never resonance-biased, the
+      same reasoning `combine_kind`/`base_kind` already establish) and three
+      tunable, resonance-biased holes per atom (`modulus`, `cmp`, `const`).
+      An atom is `(Var(var) % Const(modulus)) CMP Const(const)`; `var` is one
+      shared name per template instance (like `_recursive_template`'s
+      `seed_var`/`_fold_template`'s `list_name`), not per atom - the
+      motivating target has one scalar input, so per-atom-distinct variables
+      would be untested complexity it doesn't need. `and_or3` is the leap-
+      year target's literal shape; `or_and3` is its standard boolean-algebra
+      dual (`A∧(B∨C) ≡ (A∧B)∨(A∧C)`, specialized via `year%400==0 ⟹
+      year%100==0`), giving the target two independent structural doors
+      instead of one. Traced by hand against the exact target before
+      committing to the design: `and_or3` with atoms `(4,"==",0),
+      (100,"!=",0),(400,"==",0)` builds *exactly* the target formula.
+      `NOT` deliberately excluded - `!=` already negates where it matters,
+      and `UnaryOp("not", ...)` is already reachable by ordinary growth.
+      New opt-in flag `allow_bool_template` (default `False`), gated the way
+      `allow_recursion` gates its own template (not fold's self-selecting
+      `if list_inputs`) - bool template's activation condition ("has a
+      scalar input") is true for almost every call, so leaving it
+      unconditionally live would waste `template_rate` draws on and/or
+      skeletons for plain arithmetic targets, the same diversity-dilution
+      concern that made `allow_recursion` itself opt-in.
+- [x] One genuinely new wrinkle vs. the other two templates: `modulus`/`cmp`/
+      `const` are reinforced once *per atom* (2-3x per individual per
+      generation) since 2-3 atoms share the same category names, unlike
+      `shape_kind`'s 1x - built the straightforward way first and validated
+      by the reliability sweep rather than pre-guessing a correction was
+      needed.
+- [x] Confirmed a true no-op for every existing caller before trusting the
+      new mechanism at all: full `pytest -q` unchanged (145 passed, 10
+      skipped) with `allow_bool_template=False` (the default) - the new
+      checks add zero behavior change for anything that doesn't opt in.
+- [x] The actual measurement, not just "a template now exists": with
+      `allow_bool_template=True`, the *same* budget already measured failing
+      for blind search (population=300/generations=80) went from 0/8 to
+      4/8 verified, 2/8 generalizing - real movement, but a real remaining
+      problem, diagnosed rather than declared good enough. Two further
+      rounds of diagnosis, each finding a genuine issue and fixing it with
+      more information, not more search machinery:
+      1. Two seeds "verified" on coincidental formulas using `year % 5` or
+         `year % 7` in place of `year % 100` - since every century-exception
+         year in the 2-example training set happened to also be divisible by
+         5, "not divisible by 5" coincidentally stood in for "not a century
+         year" until a real leap year that's *also* divisible by 5 but isn't
+         a century year (2020, 1980) exposed it. The same Class A lesson the
+         v0.22 list-op audit already found, surfacing again through a richer
+         modulus vocabulary than earlier targets had access to.
+      2. Even after adding those, other seeds found similar coincidences
+         (`year % 7`-based) fitting the *specific two* century-exception
+         years (1900, 1800) in training while failing on real century years
+         not included (1700, 2100, 2200). Fixed by adding four more real
+         century-exception years (1700, 2100, 2200, 2300) spanning varied
+         mod-3/5/7 residues, so no single small-modulus coincidence fits all
+         of them the way it could fit two.
+      With both fixes: **generations raised to 150 (same population=300)
+      reached 8/8** on the seeds used for the committed reliability test,
+      converging in single-digit generations on most seeds (vs. 80
+      generations timing out with no fix). A wider 30-seed validation sweep
+      found one further failure (seed 19): a genuine `AND(year%4==0, NOT
+      year%100==0)` local optimum - correctly handles every training example
+      except the three div-by-400 exceptions, a strong 2-atom (`and2`)
+      family optimum competing against the 3-atom family needed for the full
+      rule. Population=500 fixed seed 19 - but moved the identical failure
+      to two *different* seeds instead (2 and 18) - the same whack-a-mole
+      shape this project's history already has several examples of (v0.16's
+      Fibonacci example count, v0.20's hole-mutation rate). Kept
+      population=300/generations=150 (29/30 on the wide sweep, 8/8 on the
+      committed seed range) rather than chasing 30/30 by continuing to move
+      the same residual gap around - recorded as an honest, understood
+      limitation, the same way seed 8 and `sum_via_fold` seed 3 already are.
+- [x] A real bug found only by running the actual CLI end-to-end, not by the
+      150+ passing unit/integration tests (every one of which imports
+      `synthesize` from `search.py` directly): `tier4_synthesis/synth.py` is
+      a separate, curated "public entry point" wrapper that whitelists which
+      `search.synthesize` parameters it forwards - adding
+      `allow_bool_template` to `search.py` and to every direct test/call site
+      did not make it reach `cli.py`'s actual `zeuss synth` command, which
+      imports the wrapper. `python -m zeuss synth` raised `TypeError:
+      synthesize() got an unexpected keyword argument 'allow_bool_template'`
+      with the full test suite green. Fixed by threading the parameter
+      through the wrapper too, and added
+      `test_synth_wrapper_exposes_allow_bool_template` - a dedicated test
+      that imports from the wrapper specifically, not `search`, so a new
+      `search.py` parameter never reaching the curated public entry point
+      can't silently recur. `CLAUDE.md`'s "python -m zeuss demo still runs"
+      definition-of-done item is exactly what this session's own habit of
+      actually running the CLI (not just trusting a green test suite) is
+      for - this bug is the concrete case where that habit caught something
+      151 passing tests did not.
+- [x] Added `python -m zeuss synth` Scenario 5 (the leap-year rule, printing
+      the discovered formula and checking it against real held-out years);
+      `tests/test_synthesis.py` unit tests for the one genuinely novel/risky
+      piece of extraction logic this template needed (disambiguating `and2`
+      from `and_or3`, `or2` from `or_and3` - neither the recursion nor fold
+      template needed anything like this, and neither has its own unit-level
+      round-trip tests, this module's own established convention of
+      validating templates end-to-end rather than at the unit level);
+      `test_synthesize_recovers_leap_year_rule` and
+      `test_leap_year_rule_is_reliable_across_seeds` (8/8, mirroring
+      `test_resonant_bias_discovers_recursion_reliably_across_seeds`/
+      `test_list_ops_are_reliable_across_seeds`). Full suite: 151 passed, 10
+      skipped (was 145); `python -m zeuss demo` unaffected.
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
