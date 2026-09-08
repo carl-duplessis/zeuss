@@ -7,6 +7,7 @@
     python -m zeuss audit                # sheaf cohomology consistency audit
     python -m zeuss drive                # active inference / EFE action selection
     python -m zeuss synth                # genetic-programming AST synthesis demo
+    python -m zeuss agent                # perceive/represent/infer/choose agent demo
 """
 from __future__ import annotations
 
@@ -241,6 +242,39 @@ def _synth() -> int:
     return 0
 
 
+def _agent() -> int:
+    import numpy as np
+
+    from .agent import Agent, demo_world
+
+    print("== Vault Run: a self-contained perceive->represent->infer->choose agent ==\n")
+    print("5 rooms, 5 doors. Two doors start unprobed: the shortcut (hall-vault) and")
+    print("the detour (hall-annex). Scenario: the shortcut turns out to be closed, so")
+    print("the agent has to discover that, back off, and find the detour instead.\n")
+
+    world = demo_world(seed_doors={"door_hv_open": 0.0, "door_ha_open": 1.0})
+    agent = Agent(world=world, current_room="entry", goal="vault", rng=np.random.default_rng(3))
+    history = agent.run(max_ticks=20)
+
+    for r in history:
+        beliefs = ", ".join(f"{k.replace('door_', '').replace('_open', '')}={v:.2f}" for k, v in r.beliefs.items())
+        print(f"  tick {r.tick}: at {r.room:<8s} -> {r.action:<22s} [{r.kind:5s}]  beliefs: {beliefs}")
+
+    print(f"\nfinal room: {agent.current_room}  goal reached: {agent.current_room == agent.goal}")
+    hv = world.door_by_name("door_hv_open").sensed
+    ha = world.door_by_name("door_ha_open").sensed
+    print(f"shortcut (hall-vault) ended up believed: {hv:.2f}  (ground truth: closed)")
+    print(f"detour   (hall-annex) ended up believed: {ha:.2f}  (ground truth: open)")
+    print(
+        "\n(Composes tier3_logic.grounding.compile_theory/settle/readout for belief "
+        "update, qa.ask for room-kind lookup, and drive.select_action - twice per "
+        "tick, once against a goal Landscape built from Ontology room waves, once "
+        "against the compiled belief Landscape when a door needs probing - see "
+        "src/zeuss/agent.py and docs/ROADMAP.md for the full design.)"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zeuss", description="Zeuss substrate CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -252,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("audit", help="sheaf cohomology consistency audit")
     sub.add_parser("drive", help="active inference / EFE action selection")
     sub.add_parser("synth", help="genetic-programming AST synthesis demo")
+    sub.add_parser("agent", help="self-contained perceive/represent/infer/choose agent demo")
     args = parser.parse_args(argv)
 
     if args.cmd == "info":
@@ -264,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
         return _drive()
     if args.cmd == "synth":
         return _synth()
+    if args.cmd == "agent":
+        return _agent()
     if args.cmd == "demo":
         try:
             return _demo()

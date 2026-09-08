@@ -868,6 +868,104 @@
       than being caught immediately. `test_synthesize_recovers_list_sum_via_fold`'s
       docstring now records this directly.
 
+## v0.25 — Vault Run: composing the tiers into one agent, not five demos
+
+- [x] Every tier (VSA hypervector algebra, entropy-driven collapse,
+      energy-landscape settling, the fuzzy-logic-to-energy compiler, the EFE
+      action scorer) had been demoed and tested in isolation but never
+      composed into one running loop - `python -m zeuss demo`/`cli.py` calls
+      each primitive independently in a single script. Built `src/zeuss/
+      agent.py`: a small 5-room navigation toy domain ("Vault Run") with two
+      doors that start unprobed (a shortcut and a detour), composing
+      `Ontology`+`qa.ask` (room-kind lookup), `compile_theory`/`settle`/
+      `readout` (belief update from sensor evidence), and `drive.
+      select_action` (called twice per tick - once against a goal
+      `Landscape` built from `Ontology` room waves to pick a move, once
+      against the compiled belief `Landscape` to pick which door to probe,
+      `missing_params=True` genuinely exercised) into one stateful
+      perceive->represent->infer->choose loop. No existing tier module was
+      changed - everything is achieved by calling existing public functions
+      correctly. `python -m zeuss agent` is the new CLI entry point.
+- [x] Two facts verified by reading source before designing anything (not
+      assumed from the architecture doc): `Ontology` builds its own internal
+      `Codebook` (`field(init=False)`), so every other API call in the new
+      module explicitly passes `world.onto.codebook` to share one vector
+      space; and Lukasiewicz implication
+      (`lukasiewicz_implies(a,b)=clamp(1-a+b)`) makes a single-direction rule
+      `Rule("sensor_X","door_X_open",w)` only ever pull belief *up* - penalty
+      is zero whenever `door_belief >= sensor`, so a low sensor reading never
+      pulls a high belief back down. Fixed by registering both implication
+      directions per sensed door, summing to a true biconditional
+      (`w * |sensor - belief|`) - covered by an explicit low-sensor test,
+      since a high-only test would pass even with the one-directional bug.
+- [x] Three more real bugs found by running the thing, not by reasoning
+      about the code - each fixed by measuring the actual failure, the same
+      discipline the whole tier4 line of work this session established:
+      1. A first `add_door` design inferred "known open from the start" from
+         `ground_truth == 1.0`, so whenever a scenario happened to set the
+         shortcut open, it was silently pre-revealed before any probe -
+         confusing "structurally always-open" (the three fixed doors) with
+         "this scenario's uncertain door happens to come out open." Fixed
+         with an explicit `known: bool` flag instead of inferring it.
+      2. `compile_theory`/`settle`/`readout` for a genuinely unprobed door
+         (no sensor rule at all, every Boolean corner tied on that bit) was
+         assumed to read out near 0.5. Measured instead: both uncertain
+         doors read ~0.3 with *zero* probes ever taken. Root cause is
+         already documented elsewhere in this codebase -
+         `grounding.anneal_theory`'s own docstring states a single settle
+         trajectory on an underdetermined theory "spontaneously breaks the
+         symmetry and commits to *one* of the tied corners," not an even
+         blend - this assumption simply hadn't been checked against that
+         precedent before relying on it. Fixed by averaging `readout` over
+         an ensemble of independent random-restart settle trajectories
+         instead of one; `ensemble=8` still crossed either decision
+         threshold ~1.7% of the time (measured over 60 draws, std~0.07
+         around the true 0.5) - exactly what produced a real failure 1/30
+         seeds into an early end-to-end sweep - `ensemble=32` measured zero
+         crossings with margin to spare.
+      3. Offering *any* known-open neighbor as a move candidate regardless
+         of whether it made progress let the agent thrash forever between
+         `hall` and `entry` (an always-open door connects them, and a one-
+         candidate list trivially "wins" `select_action` even when the move
+         is pointless). Fixed by filtering move/probe candidates to rooms no
+         farther from the goal than the current one (the same BFS table
+         that builds the goal landscape's decay weights) - not *strictly*
+         nearer, since `hall` and `annex` are both exactly one hop from
+         `vault` (siblings around the goal, not nested); a strict-
+         improvement-only filter was tried first and broke the detour-
+         recovery scenario by excluding the `hall -> annex` move entirely.
+      4. Even with candidates correctly filtered, `pragmatic_value`'s
+         default `step_size=0.3` (a 30% nudge toward the candidate's effect
+         vector) left the hypothetical state dominated by the *current*
+         room's own strong self-similarity, making `move_to_vault` (0 hops)
+         and `move_to_hall` (1 hop, lateral) score EFE=-0.4676 vs -0.4678 -
+         a noise-level tie - from `annex`. A move decision asks "how good
+         would it be to *be* at the destination," which needs a full step;
+         `step_size=1.0` on the move `select_action` call cleanly separated
+         the same pair to -0.999 vs -0.499.
+- [x] Test suite (`tests/test_agent.py`): unit tests for the biconditional
+      fix (explicit high *and* low sensor cases), the unsensed-door-near-0.5
+      claim (checked, not assumed), goal-landscape distance preference,
+      ontology-based deadend exclusion, and `missing_params` logic; end-to-
+      end tests swept across 8 seeds each for all three scenarios (shortcut
+      open, detour recovery, no path exists - **100% required, not
+      documented-partial**, since this is new code with no prior single-
+      seed-luck history to inherit) plus a determinism check and a thrash
+      regression guard. First version of the thrash test was itself wrong -
+      it counted every tick's room including ones where the agent stayed
+      put to probe, not actual move transitions - caught and fixed before
+      landing, not shipped broken. Full suite: 142 passed, 10 skipped
+      (was 103), ~205s; `python -m zeuss demo` unaffected.
+- [x] Tier4 program synthesis deliberately not used here, stated as a scoped
+      v2 idea rather than silently dropped: `synthesize` operates over plain
+      `dict`/`list` inputs with no representation for hypervectors or fuzzy
+      valuations, so bridging it in needs its own domain-terms design (e.g.
+      replacing `candidate_actions`'s `OPEN_THRESHOLD`/`CLOSED_THRESHOLD`
+      logic with a small synthesized classifier) - a real, separate design
+      problem, not glue that falls out of the existing APIs the way
+      everything above did.
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
