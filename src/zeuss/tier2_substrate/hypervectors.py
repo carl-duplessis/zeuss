@@ -103,6 +103,25 @@ class Codebook:
     def add(self, name: str, vector) -> None:
         self._items[name] = normalize(vector)
 
+    def items(self) -> dict[str, "xp.ndarray"]:
+        """A copy of every minted ``{name: vector}`` pair - a read accessor
+        for persistence (see :func:`.tier4_synthesis.grammar_bias.
+        save_grammar_bias`): ``symbol()`` draws lazily from one evolving RNG
+        stream, so which vector a name gets depends on *when* it was first
+        requested, not just ``seed`` - reconstructing a fresh ``Codebook``
+        with the same seed does not reproduce the same per-name vectors
+        unless names are requested in the exact original order. Persisting
+        the actual vectors (via this and :meth:`load`) is the only way to
+        restore a codebook's meaning across a process restart."""
+        return dict(self._items)
+
+    def load(self, items: dict[str, "xp.ndarray"]) -> None:
+        """Bulk-restore previously-minted ``{name: vector}`` pairs (see
+        :meth:`items`) without touching ``_rng`` - names encountered *after*
+        loading still mint fresh vectors normally, only names present in
+        ``items`` are restored verbatim."""
+        self._items.update(items)
+
     def names(self) -> list[str]:
         return list(self._items)
 

@@ -1144,6 +1144,301 @@
       skipped (was 145); `python -m zeuss demo` unaffected.
 
 
+## v0.28 — motif resonance: a general alternative to hand-built templates,
+## tried honestly, and not (yet) a replacement
+
+- [x] Direct pushback, raised against this project's own stated preference
+      (`CLAUDE.md`: prefer a rule that *emerges* from the dynamics over a
+      design that special-cases a symbolic path): three times running
+      (`_recursive_template` v0.14-v0.21, `_fold_template` v0.24,
+      `_bool_template` v0.27), a new synthesis target that reliably failed
+      under blind mutation/crossover got fixed by a human hand-designing a
+      whole-skeleton template with named holes. That doesn't scale to every
+      future problem shape, and is itself the kind of special-cased
+      symbolic path this project says to avoid. Asked to find (or build) a
+      general alternative instead of a fourth bespoke template.
+- [x] The general category already exists in the GP literature -
+      Probabilistic Incremental Program Evolution (Salustowicz &
+      Schmidhuber 1997) and module-acquisition/ADFs (Koza 1994; Angeline &
+      Pollack) both let a population's own fitness signal shape what
+      structure gets grown next, instead of a human pre-declaring it. Rather
+      than import either wholesale, adapted the idea onto this project's own
+      substrate: `ResonantBias` (`resonance_bias.py`) is already a fully
+      generic EDA - parameterized by an arbitrary `categories: dict[str,
+      list]`, silently skipping unknown reinforcement keys, re-reading
+      `categories[cat]` fresh on every `sample()` call - confirmed by
+      reading the whole file before designing anything, not assumed from
+      its docstring. It already gets constructed three separate times for
+      three hand-picked category dicts; the missing piece was never a new
+      EDA, just a mechanism that discovers *what the categories and options
+      should be* from the population itself.
+- [x] Built `tier4_synthesis/motif_bias.py`: `MotifArchive` wraps one
+      `ResonantBias` whose `categories[context]` starts empty and grows at
+      runtime as distinct subtrees are observed - `ResonantBias` needed no
+      changes to support this. A "motif" is any subtree found at a
+      `(parent_kind, child_slot, depth_bucket)` structural context (see
+      `context_key`/`collect_motifs`); every generation,
+      `reinforce_from_population` walks the scored population (bounded to 3
+      levels per individual) and registers every subtree it finds, weighted
+      by `exp(-energy)` - the exact reinforcement convention every existing
+      template's bias already uses, just applied to whole subtrees keyed by
+      position instead of named hole-fillers keyed by a hand-declared
+      category. A small per-context capacity (20 motifs, lowest-weight
+      evicted) keeps the archive bounded across 150 generations x hundreds
+      of individuals.
+- [x] Wired into `_grow` itself (search.py), not just at the top-level entry
+      point the way templates are checked: at *every* grow site, before
+      building fresh, check whether the archive already has a reinforced
+      subtree at this exact context and splice a copy in instead - the
+      generalization of a template's "known-good skeleton" idea, except the
+      skeleton is discovered from the population's own history instead of
+      hand-written. Guarded so `allow_motif_bias=False` (the default) never
+      spends an RNG draw on the check at all, keeping every existing
+      caller's draw sequence bit-for-bit identical - confirmed directly
+      (`test_motif_bias_is_a_true_noop_by_default`), not just inferred from
+      "the rest of the suite still passes" (true, but none of the other 152
+      tests exercise the new parameters at all, so they couldn't have caught
+      a future refactor moving the guard).
+- [x] Also added `allow_fold_template`/`allow_recursion_template` (both
+      default `True`, so no existing behavior changes): `_bool_template`
+      already had a kill switch (`allow_bool_template`), but `_fold_template`
+      had none (self-selecting on `list_inputs` alone) and
+      `_recursive_template`'s activation was entangled with `allow_recursion`
+      itself (which also controls whether `letrec`/`recur` are in
+      `_choose_kind`'s pool at all). Needed so motif resonance could be
+      measured on the *same* target with the corresponding hand template
+      switched off, rather than the two mechanisms always competing for the
+      same `template_rate` draw.
+- [x] Deliberately does not remove or replace any of the three existing
+      templates - ripping out hard-won, currently-green reliability
+      (v0.14-v0.27's whole arc) in favor of an unproven generic mechanism
+      would be reckless. Shipped as a fourth, independent, default-off path,
+      measured before any claim was made about it.
+- [x] The measurement - the actual deliverable, not the mechanism by itself.
+      Re-ran the three targets that motivated each existing template, with
+      that template disabled and `allow_motif_bias=True` instead, at the
+      exact committed budgets/seeds already in `tests/test_synthesis.py`:
+      - Leap year (`allow_bool_template=False`, budget/seeds from
+        `test_leap_year_rule_is_reliable_across_seeds`, widened to 10
+        seeds): **0/10 verified**. Every seed converges to the identical
+        `not (year % 2)` "is even" trap plain blind growth hits with no
+        template at all.
+      - `sum_of_squares_via_fold` (`allow_fold_template=False`, budget/seeds
+        from `test_synthesize_recovers_sum_of_squares_via_fold`, 8 seeds):
+        **1/8 verified and generalizing** - seed 7 rediscovered the exact
+        genuine fold shape from scratch via motif reuse in 4 generations, a
+        real positive signal - but 1/8 is *worse* than blind growth's own
+        historical 3/8 baseline at this identical budget (v0.22's audit).
+      - `2**n` (`allow_recursion=True`, `allow_recursion_template=False`,
+        budget/seeds from
+        `test_resonant_bias_discovers_recursion_reliably_across_seeds`, 8
+        seeds): **1/8 "verified", 0/8 generalizing** - the one verified seed
+        found a coincidental non-recursive expression fitting the 5 training
+        examples by luck, the exact verified-but-wrong shape this project's
+        whole methodology exists to catch, not genuine recursion discovery.
+- [x] Diagnosed why, rather than stopping at the numbers: motif resonance
+      can only reinforce and reuse structure that has already appeared
+      *somewhere* in the population with a competitive energy - it has no
+      way to independently invent a compound shape that essentially never
+      spontaneously forms under blind growth in the first place, which is
+      exactly why each of the three hand-built templates was needed
+      (`_bool_template`'s own comment: blind growth reliably misses the
+      3-atom AND/OR nesting; `_recursive_template`'s docstring: "under 5% of
+      random depth-4 trees even contain a `Letrec` with an `If`-shaped
+      body"). The very first generation is 100% blind growth, so if the
+      correct top-level shape never appears there, the archive has nothing
+      genuine to discover before the population commits to a coincidental
+      local optimum instead - and once it does, motif resonance reinforces
+      *that* structure's pieces just as readily as it would a correct one.
+      `sum_of_squares_via_fold`'s partial, real success fits this exactly: a
+      `Fold` node is common under blind growth (unlike a 3-atom boolean
+      formula or a `Letrec`), so the hard part there is a comparatively
+      small "which transform" choice inside an already-common skeleton -
+      closer to what a subtree-reuse mechanism is actually suited for than
+      inventing a rare top-level shape from nothing.
+- [x] Honest scope decision: the three hand-built templates stay as the
+      deployed answer for their own targets. Motif resonance ships as a
+      real, fully generic, zero-regression opt-in - not a claim of matching
+      what `_recursive_template`/`_fold_template`/`_bool_template` eventually
+      reached after several dedicated versions each (v0.14-v0.21 alone took
+      seven versions to reach today's recursion reliability). A follow-up
+      that wanted to close this gap would likely need the same kind of
+      iterative hardening those templates got (per-context/per-family
+      elitism so an early bad motif can't starve a better one out, a
+      reuse-vs-full-regrowth balance analogous to
+      `_TEMPLATE_HOLE_MUTATION_RATE`, stagnation-triggered archive resets) -
+      not attempted this session, recorded as the natural next step rather
+      than assumed unnecessary.
+- [x] New tests: `test_motif_archive_registers_samples_and_evicts` and
+      `test_collect_motifs_yields_contexts_matching_grow_sites` (unit-level,
+      independent of whether the mechanism helps any target),
+      `test_motif_bias_is_a_true_noop_by_default` (pinned-seed proof, not
+      just inference from the rest of the suite passing),
+      `test_synth_wrapper_exposes_allow_motif_bias` (mirrors v0.27's own
+      wrapper-forwarding regression guard), and
+      `test_motif_bias_does_not_yet_solve_leap_year_without_bool_template`
+      (the honest negative result, with the full three-target measurement
+      and diagnosis recorded in its docstring - mirrors
+      `test_recursion_synthesis_is_safe_but_not_reliably_found`'s established
+      pattern for this project's negative results). No CLI scenario added -
+      unlike every prior template, this mechanism didn't meaningfully solve
+      any of its three motivating targets, so there is nothing to
+      demonstrate yet.
+
+
+## v0.29 — grammar resonance v2: production-level PCFG bias + persistence
+
+- [x] Direct follow-up to v0.28, per user pushback on that entry's own
+      result: motif resonance (whole-subtree reuse) failed on exactly the
+      targets whose difficulty is a compound top-level shape that
+      essentially never spontaneously assembles under blind growth - it can
+      only propagate a shape some individual already built by luck, and if
+      that never happens there is nothing genuine to discover. The user
+      identified a materially different mechanism instead: bias **every
+      production choice** `_grow`/`_leaf` already make (which `BinOp`
+      operator, which `UnaryOp` operator, `Var` vs `Const`, which constant)
+      independently, conditioned on *where* in the tree the choice is made -
+      a PCFG-style Estimation-of-Distribution search (Probabilistic
+      Incremental Program Evolution, Salustowicz & Schmidhuber 1997). A
+      compound shape can then assemble from marginal pushes on separate
+      choice-points that never co-occurred in any single ancestor, which
+      doesn't need the whole shape to have already existed once - a
+      genuinely different mechanism from v0.28's, not a rehash. Second half
+      of the request: persist that bias **across calls to `synthesize`**,
+      not reset every run, so a future target benefits from resonance
+      structure already built up by every problem solved before it.
+- [x] User-confirmed scope going in (via two explicit design questions, not
+      assumed): bias only the **fixed-option-set** choices first
+      (`binop_op`, `unaryop_op`, `leaf_kind`, `leaf_const` - all already
+      exactly what `_grow`/`_leaf` draw from today, needing zero
+      `ResonantBias` changes), deferring the harder "which node kind to
+      grow" choice-point (whose valid option pool varies per call) as a
+      well-scoped follow-up; and persistence via an **explicit, caller-
+      opted-in save/load helper**, not a hidden in-process singleton - a
+      singleton would risk test-order-dependent behavior, a real hazard
+      given how much this suite's reliability rests on pinned-seed
+      determinism.
+- [x] Context key: `(choice_name, parent_kind, child_slot)`, deliberately
+      **without depth** - unlike `motif_bias.py`'s `context_key`. Keying by
+      choice-point identity alone (e.g. "which `binop_op` under an `And`'s
+      right slot") lets reinforcement accumulate across every depth that
+      relative position occurs at, instead of fragmenting into near-empty
+      per-depth buckets - the user's specific critique of a depth-keyed
+      context, and what makes gradual, depth-independent joint assembly
+      possible at all.
+- [x] Built `tier4_synthesis/grammar_bias.py`: `GrammarBias` wraps one
+      `ResonantBias` (constructed with a `choice_vocab` dict supplied by
+      `search.py`, avoiding both a circular import and a second, driftable
+      copy of `_BINOPS`/`_UNARYOPS`/`_LEAF_CONSTS`); `collect_production_
+      choices` walks a tree yielding every choice found (unbounded depth -
+      cheap now, since this only categorizes one node at a time, no subtree
+      copies unlike `collect_motifs`); `save_grammar_bias`/`load_grammar_
+      bias` persist via `pickle` (nested dicts of `str -> complex128
+      ndarray` plus a plain categories dict - no alignment bugs between
+      parallel name/vector arrays the way a hand-rolled npz+json split
+      would risk).
+- [x] Two small, additive changes to existing tier-2/tier-4 code, both
+      required for persistence to be *correct*, not just convenient -
+      verified by reading `Codebook` before assuming otherwise, not
+      assumed: `Codebook.symbol(name)` is **stateful and call-order-
+      dependent** (draws from one evolving RNG stream lazily), so
+      reconstructing `Codebook(dim, seed=same)` fresh on load does *not*
+      reproduce the same per-name vectors unless names are requested in the
+      exact original order - confirmed directly
+      (`test_codebook_items_and_load_round_trip`: same seed, opposite
+      request order, provably different vectors). Added `Codebook.items()`/
+      `Codebook.load()` to persist/restore the actual vectors, sidestepping
+      the order-dependence entirely, and `ResonantBias.has_evidence()` (a
+      public equivalent of checking `_accum` from outside the class).
+- [x] Wired into `_grow`/`_leaf`/`random_program`/`_replace_at_scoped`/
+      `mutate`/`synthesize` reusing v0.28's exact established pattern - a
+      `grammar_bias` entry added to `_grow`'s existing pass-through `kwargs`
+      dict meant every recursive call site needed zero further edits beyond
+      the two actual use-sites (`binop`/`unaryop` op draws, plus `_leaf`'s
+      `var`-vs-`const` and which-`const` draws). `allow_grammar_bias`
+      (default `False`) is the same true-no-op convention every other flag
+      in this module already has - confirmed directly
+      (`test_grammar_bias_is_a_true_noop_by_default`), not just inferred
+      from "the rest of the suite still passes."
+- [x] The one genuinely new piece beyond v0.28's pattern: `grammar_bias` may
+      be **caller-supplied already-populated**, not always constructed
+      fresh inside `synthesize` like every other bias. `grammar_bias_owned`
+      tracks whether *this call* constructed it (caller passed `None`) -
+      only a self-constructed one is ever reset on the existing stagnation-
+      triggered restart or discarded at call end; a caller-supplied one is
+      caller-owned, reinforced in place, and survives both, including
+      across multiple separate calls to `synthesize`
+      (`test_grammar_bias_persists_across_synthesize_calls`). No change to
+      `synthesize`'s `(best_node, beta_trace, verified)` return contract -
+      a caller who wants to persist already holds their own reference to
+      the object they passed in.
+- [x] The measurement - the actual deliverable, not the mechanism alone.
+      Re-ran the exact three controlled comparisons v0.28 already ran, same
+      budgets/seeds, `allow_grammar_bias=True` instead of
+      `allow_motif_bias=True`, with the corresponding hand template still
+      disabled:
+      - `sum_of_squares_via_fold` (`allow_fold_template=False`, 8 seeds):
+        **4/8 verified and generalizing.** Genuinely better than blind
+        growth's own historical 3/8 baseline at this exact budget (v0.22's
+        audit) *and* better than motif resonance's 1/8 on the same target
+        (v0.28) - real, measured lift. A `Fold` node is already common
+        under blind growth (weight 3 in `_KIND_WEIGHTS_WITH_LIST`), so the
+        hard part here is a comparatively small "which transform" choice -
+        exactly the shape of problem per-choice marginal reinforcement is
+        suited for.
+      - Leap year (`allow_bool_template=False`, 10 seeds): **0/10** -
+        identical `not (year % 2)` trap to motif resonance's own result.
+      - `2**n` (`allow_recursion=True`, `allow_recursion_template=False`, 8
+        seeds): **0/8 verified** - worse than motif resonance's 1/8-but-
+        non-generalizing result.
+- [x] Diagnosed the two failures, not just reported them - and found they
+      share one root cause with v0.28's own failures, arrived at by a
+      different route. Blind growth converges to `not (year % 2)` (leap
+      year) or coincidental non-recursive arithmetic (`n*n`, `2**n`) *fast*,
+      so once that wrong structure dominates the population,
+      `reinforce_from_population` ends up reinforcing *that* structure's
+      own production choices more than anything else - the bias actively
+      pushes *harder* toward reproducing the wrong answer instead of
+      escaping it. This is the same premature-lock-in failure the three
+      hand-built templates all needed dedicated machinery to avoid
+      (per-family elitism keyed on a structural axis - `combine_kind`/
+      `base_kind`/`shape_kind` - deliberately excluded from resonance
+      biasing for exactly this reason, see `_recursive_template`'s and
+      `_bool_template`'s own docstrings). Neither general mechanism built
+      so far (v0.28's or this one) has an analogous safeguard - that
+      absence, not anything specific to subtree-reuse vs. production-level
+      biasing, is the more likely shared root cause of both mechanisms'
+      failures on these two targets.
+- [x] Net finding, stated precisely rather than rounded to "better" or
+      "worse": motif resonance (v0.28) and grammar resonance (this entry)
+      are not simply ranked - each helps on a *different* target shape.
+      Grammar resonance materially helps the fold target motif resonance
+      didn't (4/8 vs. 1/8); motif resonance found one (non-generalizing)
+      recursive-looking coincidence grammar resonance didn't. Neither helps
+      the two targets whose difficulty is a rare top-level construct
+      essentially never appearing under blind growth in the first place
+      (compound 3-atom boolean nesting; `Letrec`/`Recur` at all). Neither
+      replaces `_recursive_template`/`_fold_template`/`_bool_template`.
+- [x] New tests: `test_codebook_items_and_load_round_trip` (in
+      `test_hypervectors.py`, proving the order-dependence claim directly
+      rather than asserting it), `test_resonant_bias_has_evidence`,
+      `test_grammar_bias_registers_and_samples`, `test_collect_production_
+      choices_yields_contexts_matching_grow_sites`, `test_grammar_bias_
+      save_and_load_round_trip` (proves sampling behavior actually
+      survives a round trip, not just "deserializes without error"),
+      `test_grammar_bias_is_a_true_noop_by_default`, `test_synth_wrapper_
+      exposes_allow_grammar_bias`, `test_grammar_bias_persists_across_
+      synthesize_calls`, and the two honest measured-result tests -
+      `test_grammar_bias_improves_sum_of_squares_via_fold_over_baseline`
+      (the positive case, with the full three-target measurement and
+      diagnosis recorded in its docstring - seeds 4 and 7 from the 8-seed
+      sweep) and `test_grammar_bias_does_not_yet_solve_leap_year_or_pow2`
+      (the negative case, mirroring v0.28's own negative-result test
+      pattern). No CLI scenario added - the same standard v0.28 set: only
+      demo a mechanism once it's shown reliable enough to be worth showing,
+      and 4/8 isn't there yet.
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

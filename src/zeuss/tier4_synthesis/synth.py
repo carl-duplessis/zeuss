@@ -18,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 
 from .dsl import Node, pretty
+from .grammar_bias import GrammarBias
 from .search import Example, synthesize as _synthesize
 
 
@@ -30,6 +31,12 @@ def synthesize(
     max_depth: int = 4,
     allow_recursion: bool = False,
     allow_bool_template: bool = False,
+    allow_fold_template: bool = True,
+    allow_motif_bias: bool = False,
+    allow_recursion_template: bool = True,
+    allow_grammar_bias: bool = False,
+    grammar_bias: "GrammarBias | None" = None,
+    allow_shape_elitism: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     rng: np.random.Generator | None = None,
@@ -52,6 +59,35 @@ def synthesize(
     diversity-dilution reason ``allow_recursion`` is - it's a separate opt-in
     from ``allow_recursion`` (a target can request either, both, or neither).
 
+    ``allow_fold_template`` (default ``True``) is a kill switch for the fold
+    template, useful only for controlled comparisons against
+    ``allow_motif_bias`` on the same list-processing target - leave it at the
+    default otherwise. ``allow_motif_bias`` opts into motif resonance (see
+    :mod:`.motif_bias`): a fourth, independent mechanism that reinforces and
+    reuses actual subtrees from the population's own history instead of a
+    hand-built skeleton, off by default and not a claim of matching the other
+    three templates' reliability (see :func:`.search.synthesize`'s docstring
+    and ``docs/ROADMAP.md`` v0.28). ``allow_recursion_template`` (default
+    ``True``) is the same kind of kill switch for :func:`.search.
+    _recursive_template` specifically, decoupled from ``allow_recursion``
+    itself - only useful for the same kind of controlled comparison.
+
+    ``allow_grammar_bias``/``grammar_bias`` opt into production-level PCFG
+    resonance (see :mod:`.grammar_bias`): a fifth, independent mechanism that
+    biases individual production choices rather than whole subtrees, off by
+    default (see :func:`.search.synthesize`'s docstring and
+    ``docs/ROADMAP.md`` v0.29 for the honest measured comparison). Unlike
+    every other bias, ``grammar_bias`` may be supplied already-populated
+    (e.g. via :func:`.grammar_bias.load_grammar_bias`) to persist learned
+    structure across calls - see that docstring for the ownership rule.
+
+    ``allow_shape_elitism`` opts into a sixth, orthogonal mechanism: per-
+    family elitism keyed by an automatically-derived root-shape signature
+    instead of a template's own hole-choices, built to fix a diagnosed
+    shared root cause behind both bias mechanisms' failures on some targets
+    (see :func:`.search.synthesize`'s docstring and ``docs/ROADMAP.md``
+    v0.30 for the honest measured comparison).
+
     Returns ``(best_node, beta_trace, verified)`` - see :func:`.search.synthesize`.
     """
     return _synthesize(
@@ -63,6 +99,12 @@ def synthesize(
         max_depth=max_depth,
         allow_recursion=allow_recursion,
         allow_bool_template=allow_bool_template,
+        allow_fold_template=allow_fold_template,
+        allow_motif_bias=allow_motif_bias,
+        allow_recursion_template=allow_recursion_template,
+        allow_grammar_bias=allow_grammar_bias,
+        grammar_bias=grammar_bias,
+        allow_shape_elitism=allow_shape_elitism,
         resonant_bias=resonant_bias,
         fuel_budget=fuel_budget,
         rng=rng,

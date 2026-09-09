@@ -127,3 +127,35 @@ def test_decode_sequence_degrades_at_low_dimension():
 
     assert correct_high == n  # reliable at this project's usual dimension
     assert correct_low < n  # genuinely, measurably worse at dim=64
+
+
+def test_codebook_items_and_load_round_trip():
+    """`Codebook.symbol` mints lazily from one evolving RNG stream, so a
+    name's vector depends on *when* it was first requested, not just
+    `seed` - reconstructing `Codebook(dim, seed=same)` fresh does NOT
+    reproduce the same per-name vectors unless names are requested in the
+    exact original order. `items()`/`load()` (added for
+    `tier4_synthesis/grammar_bias.py`'s persistence - see docs/ROADMAP.md
+    v0.29) exist to restore the actual vectors directly, sidestepping that
+    order-dependence entirely."""
+    original = Codebook(dim=128, seed=0)
+    v_a = original.symbol("a")  # 1st draw from the seed-0 RNG stream
+    v_b = original.symbol("b")  # 2nd draw
+
+    fresh = Codebook(dim=128, seed=0)
+    # Confirms the order-dependence claim above, not just asserts it: "b"
+    # is the *1st* draw here (nothing requested "a" first on this instance),
+    # but the *2nd* draw on `original` above - same seed, same eventual
+    # name, different vector, because minting is keyed by call position,
+    # not by hashing the name itself.
+    assert not np.array_equal(fresh.symbol("b"), v_b)
+
+    restored = Codebook(dim=128, seed=99)  # a *different* seed entirely
+    restored.load(original.items())
+    assert np.array_equal(restored.symbol("a"), v_a)
+    assert np.array_equal(restored.symbol("b"), v_b)
+    # A genuinely new name (never in the loaded items) still mints fresh,
+    # rather than raising or returning something stale.
+    v_c = restored.symbol("c")
+    assert v_c.shape == (128,)
+    assert "c" not in original.items()

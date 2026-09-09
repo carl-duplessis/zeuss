@@ -76,11 +76,30 @@ from ..tier2_substrate.collapse import softmax
 from ..tier2_substrate.hypervectors import Codebook
 from .dsl import children as _children
 from .dsl import count_nodes, evaluate, rebuild
+from .grammar_bias import GrammarBias
+from .motif_bias import MotifArchive, context_key
 from .resonance_bias import ResonantBias
 
 _BINOPS = ("+", "-", "*", "//", "%", "==", "!=", "<", "<=", ">", ">=", "and", "or")
 _UNARYOPS = ("-", "not")
 _LEAF_CONSTS = (0, 1, 2, 3, True, False)
+
+# The fixed, target-independent option sets `GrammarBias` (grammar_bias.py)
+# biases production choices over - supplied from here rather than
+# redeclared there, avoiding both a circular import and a second, driftable
+# copy of these tuples. Deliberately does not include a "kind" category
+# (which node type to grow): its valid option pool varies per call (list
+# ops only exist when list_inputs is non-empty, letrec/recur only when
+# allow_recursion), which needs a ResonantBias variant that takes a
+# caller-supplied candidate list rather than its own fixed
+# categories[cat] - a well-scoped follow-up, not attempted in this version
+# (see docs/ROADMAP.md v0.29).
+GRAMMAR_CHOICE_VOCAB: dict[str, list] = {
+    "binop_op": list(_BINOPS),
+    "unaryop_op": list(_UNARYOPS),
+    "leaf_kind": ["var", "const"],
+    "leaf_const": list(_LEAF_CONSTS),
+}
 
 # Node "kind" weights for random generation, keyed by whether a list input is
 # available. Weighted (not uniform) so adding more list constructs doesn't
@@ -120,10 +139,30 @@ def _choose_kind(
     return kinds[int(rng.choice(len(kinds), p=probs))]
 
 
-def _leaf(inputs: list[str], rng: np.random.Generator) -> Node:
-    if inputs and rng.random() < 0.6:
+def _leaf(
+    inputs: list[str],
+    rng: np.random.Generator,
+    parent_kind: str = "root",
+    child_slot: int = 0,
+    grammar_bias: "GrammarBias | None" = None,
+) -> Node:
+    if grammar_bias is not None:
+        leaf_kind = grammar_bias.sample_or(
+            "leaf_kind", parent_kind, child_slot, rng,
+            lambda: "var" if inputs and rng.random() < 0.6 else "const",
+        )
+    else:
+        leaf_kind = "var" if inputs and rng.random() < 0.6 else "const"
+    if leaf_kind == "var" and inputs:
         return Var(str(rng.choice(inputs)))
-    return Const(_LEAF_CONSTS[int(rng.integers(0, len(_LEAF_CONSTS)))])
+    if grammar_bias is not None:
+        value = grammar_bias.sample_or(
+            "leaf_const", parent_kind, child_slot, rng,
+            lambda: _LEAF_CONSTS[int(rng.integers(0, len(_LEAF_CONSTS)))],
+        )
+    else:
+        value = _LEAF_CONSTS[int(rng.integers(0, len(_LEAF_CONSTS)))]
+    return Const(value)
 
 
 def _grow(
@@ -133,6 +172,12 @@ def _grow(
     rng: np.random.Generator,
     depth: int,
     allow_recursion: bool = False,
+    parent_kind: str = "root",
+    child_slot: int = 0,
+    template_rate: float = 0.15,
+    allow_motif_bias: bool = False,
+    motif_archive: "MotifArchive | None" = None,
+    grammar_bias: "GrammarBias | None" = None,
 ) -> Node:
     # List-typed names are only ever useful directly as a Fold's list_expr -
     # using one as an ordinary scalar leaf is (almost) always a type error
@@ -140,69 +185,122 @@ def _grow(
     # scalar-only subset.
     scalars = [n for n in inputs if n not in list_inputs]
 
+    # Motif resonance (opt-in, see motif_bias.py): before growing fresh at
+    # this exact structural position, check whether the archive already has
+    # a reinforced subtree observed at this same (parent_kind, child_slot,
+    # depth) context, and splice a copy of it in instead - the
+    # generalization of _recursive_template/_fold_template/_bool_template's
+    # "known-good skeleton" idea, except the skeleton is discovered from the
+    # population's own history instead of hand-written. Guarded so
+    # allow_motif_bias=False never spends an rng draw here, keeping every
+    # existing caller's draw sequence bit-for-bit unchanged.
+    if allow_motif_bias and motif_archive is not None:
+        ctx = context_key(parent_kind, child_slot, depth)
+        if motif_archive.has(ctx) and rng.random() < template_rate:
+            motif = motif_archive.sample(ctx, rng)
+            if motif is not None:
+                return motif
+
     if depth <= 0 or rng.random() < 0.35:
-        return _leaf(scalars, rng)
+        return _leaf(scalars, rng, parent_kind, child_slot, grammar_bias)
 
     kind = _choose_kind(rng, list_inputs, recur_ctx, allow_recursion)
+    kwargs = {
+        "allow_recursion": allow_recursion,
+        "template_rate": template_rate,
+        "allow_motif_bias": allow_motif_bias,
+        "motif_archive": motif_archive,
+        "grammar_bias": grammar_bias,
+    }
 
     if kind == "binop":
-        op = _BINOPS[int(rng.integers(0, len(_BINOPS)))]
+        if grammar_bias is not None:
+            op = grammar_bias.sample_or(
+                "binop_op", parent_kind, child_slot, rng,
+                lambda: _BINOPS[int(rng.integers(0, len(_BINOPS)))],
+            )
+        else:
+            op = _BINOPS[int(rng.integers(0, len(_BINOPS)))]
         return BinOp(
             op,
-            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
-            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="BinOp", child_slot=0, **kwargs),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="BinOp", child_slot=1, **kwargs),
         )
     if kind == "unaryop":
-        op = _UNARYOPS[int(rng.integers(0, len(_UNARYOPS)))]
-        return UnaryOp(op, _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion))
+        if grammar_bias is not None:
+            op = grammar_bias.sample_or(
+                "unaryop_op", parent_kind, child_slot, rng,
+                lambda: _UNARYOPS[int(rng.integers(0, len(_UNARYOPS)))],
+            )
+        else:
+            op = _UNARYOPS[int(rng.integers(0, len(_UNARYOPS)))]
+        return UnaryOp(
+            op, _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="UnaryOp", child_slot=0, **kwargs)
+        )
     if kind == "if":
         return If(
-            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
-            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
-            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="If", child_slot=0, **kwargs),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="If", child_slot=1, **kwargs),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="If", child_slot=2, **kwargs),
         )
     if kind == "let":
         name = f"_let{int(rng.integers(0, 10_000))}"
         return Let(
             name,
-            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
-            _grow(inputs + [name], list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="Let", child_slot=0, **kwargs),
+            _grow(inputs + [name], list_inputs, recur_ctx, rng, depth - 1, parent_kind="Let", child_slot=1, **kwargs),
         )
     if kind == "letrec":
         name = f"_rec{int(rng.integers(0, 10_000))}"
         param = f"_p{int(rng.integers(0, 10_000))}"
         new_recur_ctx = recur_ctx + ((name, 1),)
-        body = _grow(scalars + [param], (), new_recur_ctx, rng, depth - 1, allow_recursion)
-        in_expr = _grow(inputs, list_inputs, new_recur_ctx, rng, depth - 1, allow_recursion)
+        body = _grow(
+            scalars + [param], (), new_recur_ctx, rng, depth - 1, parent_kind="Letrec", child_slot=0, **kwargs
+        )
+        in_expr = _grow(
+            inputs, list_inputs, new_recur_ctx, rng, depth - 1, parent_kind="Letrec", child_slot=1, **kwargs
+        )
         return Letrec(name, (param,), body, in_expr)
     if kind == "recur":
         name, arity = recur_ctx[int(rng.integers(0, len(recur_ctx)))]
-        args = tuple(_grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion) for _ in range(arity))
+        args = tuple(
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="Recur", child_slot=i, **kwargs)
+            for i in range(arity)
+        )
         return Recur(name, args)
     if kind == "length":
         return Length(Var(str(rng.choice(list_inputs))))
     if kind == "index":
         return Index(
-            Var(str(rng.choice(list_inputs))), _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion)
+            Var(str(rng.choice(list_inputs))),
+            _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="Index", child_slot=1, **kwargs),
         )
     if kind == "map":
         list_name = str(rng.choice(list_inputs))
         body_inputs = scalars + ["_item"]
-        return Map(Var(list_name), "_item", _grow(body_inputs, (), recur_ctx, rng, depth - 1, allow_recursion))
+        return Map(
+            Var(list_name),
+            "_item",
+            _grow(body_inputs, (), recur_ctx, rng, depth - 1, parent_kind="Map", child_slot=1, **kwargs),
+        )
     if kind == "filter":
         list_name = str(rng.choice(list_inputs))
         body_inputs = scalars + ["_item"]
-        return Filter(Var(list_name), "_item", _grow(body_inputs, (), recur_ctx, rng, depth - 1, allow_recursion))
+        return Filter(
+            Var(list_name),
+            "_item",
+            _grow(body_inputs, (), recur_ctx, rng, depth - 1, parent_kind="Filter", child_slot=1, **kwargs),
+        )
     # fold - body sees only the fold-bound names plus existing scalars, not
     # the raw list itself (see note above).
     list_name = str(rng.choice(list_inputs))
     body_inputs = scalars + ["_acc", "_item"]
     return Fold(
         Var(list_name),
-        _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, allow_recursion),
+        _grow(inputs, list_inputs, recur_ctx, rng, depth - 1, parent_kind="Fold", child_slot=1, **kwargs),
         "_acc",
         "_item",
-        _grow(body_inputs, (), recur_ctx, rng, depth - 1, allow_recursion),
+        _grow(body_inputs, (), recur_ctx, rng, depth - 1, parent_kind="Fold", child_slot=2, **kwargs),
     )
 
 
@@ -777,6 +875,17 @@ def extract_bool_template_choices(node: Node) -> dict | None:
     return {"shape_kind": shape, "atoms": atoms}
 
 
+def root_shape(node: Node) -> tuple[str, object]:
+    """An automatically-derived, hand-declaration-free family signature for
+    `synthesize`'s "shape elitism" (see :data:`GRAMMAR_CHOICE_VOCAB`'s
+    neighbourhood and `docs/ROADMAP.md` v0.30): unlike `combine_kind`/
+    `base_kind`/`shape_kind`, which only exist for the three hand-built
+    templates' own shapes, this applies to *any* individual regardless of
+    how it was grown - just the root node's DSL type and, if it has one,
+    its operator (``None`` otherwise, e.g. for `Letrec`/`Fold`/`If`)."""
+    return (type(node).__name__, getattr(node, "op", None))
+
+
 # Hole categories a template's *value* (not its structural family) is built
 # from - the ones _mutate_template_hole is allowed to retarget one at a time.
 # Mirrors _recursive_template's own bias/no-bias split: combine_kind, delta,
@@ -989,6 +1098,12 @@ def random_program(
     fold_bias: "ResonantBias | None" = None,
     allow_bool_template: bool = False,
     bool_bias: "ResonantBias | None" = None,
+    allow_fold_template: bool = True,
+    allow_motif_bias: bool = False,
+    motif_archive: "MotifArchive | None" = None,
+    allow_recursion_template: bool = True,
+    allow_grammar_bias: bool = False,
+    grammar_bias: "GrammarBias | None" = None,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -1022,12 +1137,48 @@ def random_program(
     diversity-dilution concern that made ``allow_recursion`` itself opt-in,
     even though (unlike recursion) a bool candidate is cheap to evaluate.
     ``bool_bias`` mirrors ``bias``/``fold_bias`` for this third template.
+
+    ``allow_fold_template`` (default ``True``) is a kill switch for
+    :func:`_fold_template`, added so callers can run a controlled comparison
+    against ``allow_motif_bias`` on the same list-processing targets without
+    the hand-built fold skeleton also being available - defaulting to
+    ``True`` keeps every existing caller's behavior unchanged.
+
+    ``allow_motif_bias``/``motif_archive`` enable motif resonance (see
+    :mod:`.motif_bias`) - a fourth, independent, opt-in mechanism that
+    reinforces and reuses actual subtrees from the population's own history,
+    addressed by structural context, instead of a hand-built skeleton.
+    Forwarded straight through to :func:`_grow`, which is where the
+    mechanism actually operates (at every grow site, not just this
+    top-level entry point).
+
+    ``allow_recursion_template`` (default ``True``) is a kill switch for
+    :func:`_recursive_template` specifically, decoupled from ``allow_recursion``
+    (which also controls whether ``letrec``/``recur`` are in ``_choose_kind``'s
+    pool at all) - added, like ``allow_fold_template``, purely so a caller can
+    run recursion synthesis (``allow_recursion=True``) with motif resonance
+    instead of the hand-built template, for a controlled comparison. Default
+    ``True`` keeps every existing caller's behavior unchanged.
+
+    ``allow_grammar_bias``/``grammar_bias`` enable production-level PCFG
+    resonance (see :mod:`.grammar_bias`) - a fifth, independent mechanism,
+    materially different from motif resonance: instead of reusing whole
+    subtrees, it biases individual production choices (which ``BinOp``
+    operator, which ``UnaryOp`` operator, ``Var`` vs ``Const``, which
+    constant) so a compound shape can assemble from marginal pushes on
+    separate choice-points that never co-occurred in any single ancestor -
+    see ``docs/ROADMAP.md`` v0.29 for the honest measured comparison against
+    both blind growth and motif resonance. Unlike every other bias in this
+    module, ``grammar_bias`` may be supplied already-populated by the caller
+    (e.g. loaded via :func:`.grammar_bias.load_grammar_bias`) to persist
+    learned structure *across* calls to :func:`synthesize` - see that
+    function's docstring for the ownership rule this implies.
     """
-    if allow_recursion and template_rate > 0 and rng.random() < template_rate:
+    if allow_recursion and allow_recursion_template and template_rate > 0 and rng.random() < template_rate:
         template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias, delta_p1)
         if template is not None:
             return template
-    if list_inputs and template_rate > 0 and rng.random() < template_rate:
+    if list_inputs and allow_fold_template and template_rate > 0 and rng.random() < template_rate:
         fold_template, _fold_choices = _fold_template(tuple(list_inputs), rng, fold_bias)
         if fold_template is not None:
             return fold_template
@@ -1035,7 +1186,18 @@ def random_program(
         bool_template, _bool_choices = _bool_template(inputs, tuple(list_inputs), rng, bool_bias)
         if bool_template is not None:
             return bool_template
-    return _grow(list(inputs), tuple(list_inputs), (), rng, max_depth, allow_recursion)
+    return _grow(
+        list(inputs),
+        tuple(list_inputs),
+        (),
+        rng,
+        max_depth,
+        allow_recursion,
+        template_rate=template_rate,
+        allow_motif_bias=allow_motif_bias,
+        motif_archive=motif_archive,
+        grammar_bias=grammar_bias if allow_grammar_bias else None,
+    )
 
 
 def _replace_at(node: Node, target_index: int, replacement: Node, counter: list[int]) -> Node:
@@ -1088,6 +1250,12 @@ def _replace_at_scoped(
     fold_bias: "ResonantBias | None" = None,
     allow_bool_template: bool = False,
     bool_bias: "ResonantBias | None" = None,
+    allow_fold_template: bool = True,
+    allow_motif_bias: bool = False,
+    motif_archive: "MotifArchive | None" = None,
+    allow_recursion_template: bool = True,
+    allow_grammar_bias: bool = False,
+    grammar_bias: "GrammarBias | None" = None,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
@@ -1096,15 +1264,29 @@ def _replace_at_scoped(
     real chance of being well-scoped rather than an (safely, but uselessly)
     unbound-name penalty. ``fold_bias``/``allow_bool_template``/``bool_bias``
     mirror ``bias`` for :func:`_fold_template`/:func:`_bool_template` - see
-    :func:`random_program`'s docstring."""
+    :func:`random_program`'s docstring. ``allow_fold_template``/
+    ``allow_motif_bias``/``motif_archive`` mirror :func:`random_program`'s
+    own params of the same name.
+
+    Note: the single :func:`_grow` call at the target index below passes
+    ``parent_kind="root", child_slot=0`` rather than the true position
+    immediately above the mutation point - an honest simplification, not an
+    oversight: threading the exact surrounding context through this
+    function's own many node-type branches would roughly double this
+    function's size for a benefit that only matters for the *first* level of
+    whatever gets regrown here, since ``_grow``'s own internal recursion
+    already tracks true context precisely for everything *below* that first
+    level, regardless of whether the call originated from here or from
+    :func:`random_program`'s top-level (also ``root``/``0``) call.
+    """
     idx = counter[0]
     counter[0] += 1
     if idx == target_index:
-        if allow_recursion and template_rate > 0 and rng.random() < template_rate:
+        if allow_recursion and allow_recursion_template and template_rate > 0 and rng.random() < template_rate:
             template, _choices = _recursive_template(inputs, list_inputs, rng, bias, delta_p1)
             if template is not None:
                 return template
-        if list_inputs and template_rate > 0 and rng.random() < template_rate:
+        if list_inputs and allow_fold_template and template_rate > 0 and rng.random() < template_rate:
             fold_node, _fold_choices = _fold_template(list_inputs, rng, fold_bias)
             if fold_node is not None:
                 return fold_node
@@ -1112,7 +1294,18 @@ def _replace_at_scoped(
             bool_node, _bool_choices = _bool_template(inputs, list_inputs, rng, bool_bias)
             if bool_node is not None:
                 return bool_node
-        return _grow(inputs, list_inputs, recur_ctx, rng, max(1, max_depth - 1), allow_recursion)
+        return _grow(
+            inputs,
+            list_inputs,
+            recur_ctx,
+            rng,
+            max(1, max_depth - 1),
+            allow_recursion,
+            template_rate=template_rate,
+            allow_motif_bias=allow_motif_bias,
+            motif_archive=motif_archive,
+            grammar_bias=grammar_bias if allow_grammar_bias else None,
+        )
 
     scalars = [n for n in inputs if n not in list_inputs]
     kwargs = {
@@ -1123,6 +1316,12 @@ def _replace_at_scoped(
         "fold_bias": fold_bias,
         "allow_bool_template": allow_bool_template,
         "bool_bias": bool_bias,
+        "allow_fold_template": allow_fold_template,
+        "allow_motif_bias": allow_motif_bias,
+        "motif_archive": motif_archive,
+        "allow_recursion_template": allow_recursion_template,
+        "allow_grammar_bias": allow_grammar_bias,
+        "grammar_bias": grammar_bias,
     }
 
     if isinstance(node, Let):
@@ -1203,6 +1402,12 @@ def mutate(
     fold_bias: "ResonantBias | None" = None,
     allow_bool_template: bool = False,
     bool_bias: "ResonantBias | None" = None,
+    allow_fold_template: bool = True,
+    allow_motif_bias: bool = False,
+    motif_archive: "MotifArchive | None" = None,
+    allow_recursion_template: bool = True,
+    allow_grammar_bias: bool = False,
+    grammar_bias: "GrammarBias | None" = None,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring).
@@ -1239,11 +1444,11 @@ def mutate(
     cleanly, the same way ``allow_recursion`` gates both its own entry points
     together.
     """
-    if allow_recursion and rng.random() < _TEMPLATE_HOLE_MUTATION_RATE:
+    if allow_recursion and allow_recursion_template and rng.random() < _TEMPLATE_HOLE_MUTATION_RATE:
         hole_mutated = _mutate_template_hole(node, rng, bias)
         if hole_mutated is not None:
             return hole_mutated
-    if isinstance(node, Fold) and rng.random() < _FOLD_TEMPLATE_HOLE_MUTATION_RATE:
+    if allow_fold_template and isinstance(node, Fold) and rng.random() < _FOLD_TEMPLATE_HOLE_MUTATION_RATE:
         fold_hole_mutated = _mutate_fold_template_hole(node, rng, fold_bias)
         if fold_hole_mutated is not None:
             return fold_hole_mutated
@@ -1269,6 +1474,12 @@ def mutate(
         fold_bias=fold_bias,
         allow_bool_template=allow_bool_template,
         bool_bias=bool_bias,
+        allow_fold_template=allow_fold_template,
+        allow_motif_bias=allow_motif_bias,
+        motif_archive=motif_archive,
+        allow_recursion_template=allow_recursion_template,
+        allow_grammar_bias=allow_grammar_bias,
+        grammar_bias=grammar_bias,
     )
 
 
@@ -1348,6 +1559,12 @@ def synthesize(
     allow_recursion: bool = False,
     template_rate: float = 0.15,
     allow_bool_template: bool = False,
+    allow_fold_template: bool = True,
+    allow_motif_bias: bool = False,
+    allow_recursion_template: bool = True,
+    allow_grammar_bias: bool = False,
+    grammar_bias: "GrammarBias | None" = None,
+    allow_shape_elitism: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     delta_p1_start: float = 0.15,
@@ -1420,23 +1637,96 @@ def synthesize(
     stagnation-triggered schedule instead only pays the asymmetric-search
     cost on runs that actually need it.
 
+    ``allow_fold_template`` (default ``True``) is a kill switch for
+    :func:`_fold_template`, existing solely so a caller can measure motif
+    resonance against the same target on a level playing field (the fold
+    template otherwise has no opt-out, unlike recursion's ``allow_recursion``
+    and bool's ``allow_bool_template``) - default ``True`` means every
+    existing caller's behavior is unchanged.
+
+    ``allow_motif_bias`` enables motif resonance (see :mod:`.motif_bias`): a
+    fourth, independent, opt-in mechanism that reinforces and reuses actual
+    subtrees pulled from the population's own low-energy individuals,
+    addressed by the structural context they were grown at, instead of a
+    human hand-designing a whole skeleton the way the other three templates
+    each needed. Every generation, :meth:`~.motif_bias.MotifArchive.
+    reinforce_from_population` walks the scored population (mirroring the
+    other three biases' own reinforcement loops) and :func:`_grow` may splice
+    in an archived subtree instead of growing fresh, at *every* grow site,
+    not just a template's fixed set of named holes. Default ``False``: a
+    true no-op for every existing caller, and *not* a claim that it matches
+    the reliability the three hand-built templates eventually reached after
+    several dedicated versions each - see ``docs/ROADMAP.md`` v0.28 for the
+    honest, measured comparison.
+
+    ``allow_grammar_bias``/``grammar_bias`` enable production-level PCFG
+    resonance (see :mod:`.grammar_bias`) - a fifth, independent mechanism,
+    materially different from motif resonance: it biases individual
+    production choices (which ``BinOp``/``UnaryOp`` operator, ``Var`` vs
+    ``Const``, which constant), not whole subtrees, so a compound shape can
+    assemble from marginal pushes on separate choice-points that never
+    co-occurred in any single ancestor - see ``docs/ROADMAP.md`` v0.29 for
+    the honest measured comparison against both blind growth and motif
+    resonance. Unlike every other bias in this function, a caller may supply
+    an already-populated ``grammar_bias`` (e.g. loaded via
+    :func:`.grammar_bias.load_grammar_bias`) to persist learned structure
+    *across* calls to this function - when supplied, it is reinforced in
+    place and never replaced, including across this call's own internal
+    stagnation-triggered restarts (a caller-supplied bias is caller-owned).
+    Passing ``grammar_bias=None`` with ``allow_grammar_bias=True`` builds and
+    discards a fresh one internally instead, exactly like the other four
+    biases - a purely session-scoped use, with no persistence implied.
+    Default ``False``: a true no-op for every existing caller.
+
+    ``allow_shape_elitism`` enables a sixth mechanism, orthogonal to both
+    biases above: per-family elitism (a protected slot plus guaranteed
+    refinement offspring, mirroring the three hand-built templates' own
+    ``best_template_node``/``best_fold_template_node``/``best_bool_
+    template_node`` machinery exactly) keyed by an *automatically-derived*
+    family signature (:func:`root_shape` - the root node's type and
+    operator, no hand-declared vocabulary) instead of a template's own
+    named hole-choices. Built to fix a diagnosed shared root cause behind
+    both bias mechanisms' failures on some targets (see ``docs/ROADMAP.md``
+    v0.29/v0.30): once blind growth converges to a wrong structure fast,
+    ``exp(-energy)`` reinforcement amplifies *that* structure's own choices/
+    subtrees more than a rarer, correct one's - the same premature-lock-in
+    problem the three templates avoid by protecting every family's best
+    individual from ever being starved out of reproduction, regardless of
+    which family currently scores better. Default ``False``: a true no-op
+    for every existing caller, measured independently and in combination
+    with the two bias mechanisms rather than assumed to help (see
+    ``docs/ROADMAP.md`` v0.30).
+
     Returns ``(best_node, beta_trace, verified)``. ``verified`` re-runs
     :func:`program_energy` on the winner one more time, post-hoc - never
     trust the search's own bookkeeping without re-checking.
     """
     rng = np.random.default_rng() if rng is None else rng
     bias: ResonantBias | None = None
-    if allow_recursion and resonant_bias:
+    if allow_recursion and allow_recursion_template and resonant_bias:
         bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
         bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
     fold_bias: ResonantBias | None = None
-    if list_inputs and resonant_bias:
+    if list_inputs and allow_fold_template and resonant_bias:
         fold_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
         fold_bias = ResonantBias(fold_bias_codebook, FOLD_TEMPLATE_CATEGORIES)
     bool_bias: ResonantBias | None = None
     if allow_bool_template and resonant_bias:
         bool_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
         bool_bias = ResonantBias(bool_bias_codebook, BOOL_TEMPLATE_CATEGORIES)
+    motif_archive: MotifArchive | None = None
+    if allow_motif_bias and resonant_bias:
+        motif_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+        motif_archive = MotifArchive(ResonantBias(motif_codebook, {}))
+    # Unlike the other four biases, grammar_bias may be caller-supplied (to
+    # persist across calls) - grammar_bias_owned tracks whether *this call*
+    # constructed it, since only a self-constructed one should ever be
+    # reset on restart or discarded; a caller-supplied one is caller-owned
+    # and must survive both.
+    grammar_bias_owned = allow_grammar_bias and grammar_bias is None
+    if grammar_bias_owned:
+        gb_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+        grammar_bias = GrammarBias(ResonantBias(gb_codebook, {}), GRAMMAR_CHOICE_VOCAB)
 
     delta_p1 = delta_p1_start
     stagnation = 0
@@ -1444,7 +1734,8 @@ def synthesize(
     population = [
         random_program(
             inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
-            allow_bool_template, bool_bias,
+            allow_bool_template, bool_bias, allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+            allow_grammar_bias, grammar_bias,
         )
         for _ in range(population_size)
     ]
@@ -1458,6 +1749,8 @@ def synthesize(
     best_fold_template_energy: dict[tuple[str, str], float] = {}
     best_bool_template_node: dict[tuple[str, ...], Node] = {}
     best_bool_template_energy: dict[tuple[str, ...], float] = {}
+    best_shape_node: dict[tuple[str, object], Node] = {}
+    best_shape_energy: dict[tuple[str, object], float] = {}
     beta = beta_start
     beta_trace: list[float] = []
 
@@ -1535,20 +1828,27 @@ def synthesize(
         # they track the best ever seen across every attempt, not just the
         # current one.
         if stagnation >= restart_threshold:
-            if allow_recursion and resonant_bias:
+            if allow_recursion and allow_recursion_template and resonant_bias:
                 bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
                 bias = ResonantBias(bias_codebook, TEMPLATE_CATEGORIES)
-            if list_inputs and resonant_bias:
+            if list_inputs and allow_fold_template and resonant_bias:
                 fold_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
                 fold_bias = ResonantBias(fold_bias_codebook, FOLD_TEMPLATE_CATEGORIES)
             if allow_bool_template and resonant_bias:
                 bool_bias_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
                 bool_bias = ResonantBias(bool_bias_codebook, BOOL_TEMPLATE_CATEGORIES)
+            if allow_motif_bias and resonant_bias:
+                motif_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+                motif_archive = MotifArchive(ResonantBias(motif_codebook, {}))
+            if grammar_bias_owned:
+                gb_codebook = Codebook(dim=512, seed=int(rng.integers(0, 2**31 - 1)))
+                grammar_bias = GrammarBias(ResonantBias(gb_codebook, {}), GRAMMAR_CHOICE_VOCAB)
             delta_p1 = delta_p1_start
             population = [
                 random_program(
                     inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
-                    allow_bool_template, bool_bias,
+                    allow_bool_template, bool_bias, allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+            allow_grammar_bias, grammar_bias,
                 )
                 for _ in range(population_size)
             ]
@@ -1558,6 +1858,8 @@ def synthesize(
             best_fold_template_energy = {}
             best_bool_template_node = {}
             best_bool_template_energy = {}
+            best_shape_node = {}
+            best_shape_energy = {}
             attempt_best_energy = float("inf")
             stagnation = 0
             # beta is deliberately left untouched, not reset to beta_start:
@@ -1611,6 +1913,10 @@ def synthesize(
                 # randomly-chosen atom's triple per individual instead.
                 for atom in bool_choices["atoms"]:
                     bool_bias.reinforce(atom, weight=weight)
+        if motif_archive is not None:
+            motif_archive.reinforce_from_population(population, raw_energies)
+        if allow_grammar_bias and grammar_bias is not None:
+            grammar_bias.reinforce_from_population(population, raw_energies)
 
         # Template elitism: track the best template-shaped individual *per
         # structural family* (combine_kind, base_kind), not one single best
@@ -1670,6 +1976,21 @@ def synthesize(
                     best_bool_template_energy[bool_key] = float(e)
                     best_bool_template_node[bool_key] = p
 
+        # Shape elitism: the same per-family protection as the three blocks
+        # above, but keyed by an automatically-derived signature
+        # (root_shape) instead of a template's own hand-declared hole-
+        # choices - applies to *any* individual, not just template-shaped
+        # ones, since the failure mode it targets (a numerically-dominant
+        # structure starving a rarer, correct one out of reproduction
+        # before either bias mechanism's reinforcement can act on it) isn't
+        # specific to any one template (see docs/ROADMAP.md v0.30).
+        if allow_shape_elitism:
+            for p, e in zip(population, raw_energies):
+                shape_key = root_shape(p)
+                if e < best_shape_energy.get(shape_key, float("inf")) - 1e-9:
+                    best_shape_energy[shape_key] = float(e)
+                    best_shape_node[shape_key] = p
+
         sizes = np.array([count_nodes(p) for p in population], dtype=float)
         selection_energies = raw_energies + parsimony * sizes
         probs = softmax(-beta * selection_energies)
@@ -1707,6 +2028,8 @@ def synthesize(
                 refined = mutate(
                     template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
+                    allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+                    allow_grammar_bias, grammar_bias,
                 )
                 next_population.append(refined)
         for fold_template_node in best_fold_template_node.values():
@@ -1722,6 +2045,8 @@ def synthesize(
                 fold_refined = mutate(
                     fold_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
+                    allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+                    allow_grammar_bias, grammar_bias,
                 )
                 next_population.append(fold_refined)
         for bool_template_node in best_bool_template_node.values():
@@ -1737,8 +2062,29 @@ def synthesize(
                 bool_refined = mutate(
                     bool_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
+                    allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+                    allow_grammar_bias, grammar_bias,
                 )
                 next_population.append(bool_refined)
+        for shape_node in best_shape_node.values():
+            if shape_node is population[idx_best] or len(next_population) >= population_size:
+                continue
+            next_population.append(shape_node)
+            # Same guaranteed-offspring reasoning as the three template
+            # elitism blocks above: a protected slot alone doesn't refine
+            # anything, since fitness-proportionate selection gives a
+            # mediocre-but-rare-shape individual near-zero probability of
+            # ever being chosen as a parent once a numerically-dominant
+            # competitor exists - the exact failure mode this mechanism was
+            # built to fix (see docs/ROADMAP.md v0.30).
+            for _ in range(min(_TEMPLATE_REFINEMENT_OFFSPRING, population_size - len(next_population))):
+                shape_refined = mutate(
+                    shape_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
+                    delta_p1, fold_bias, allow_bool_template, bool_bias,
+                    allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+                    allow_grammar_bias, grammar_bias,
+                )
+                next_population.append(shape_refined)
         while len(next_population) < population_size:
             i, j = rng.choice(len(population), size=2, p=np.asarray(probs))
             if rng.random() < 0.5:
@@ -1747,6 +2093,8 @@ def synthesize(
                 child = mutate(
                     population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
+                    allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
+                    allow_grammar_bias, grammar_bias,
                 )
             next_population.append(child)
         population = next_population

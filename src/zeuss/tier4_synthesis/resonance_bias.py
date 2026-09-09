@@ -40,6 +40,15 @@ class ResonantBias:
     beta: float = 0.2
     _accum: dict = field(default_factory=dict)
 
+    def has_evidence(self, category: str) -> bool:
+        """Whether :meth:`reinforce` has ever recorded an observation for
+        ``category`` - the public equivalent of checking ``_accum`` from
+        outside the class, needed by callers (e.g.
+        :class:`.grammar_bias.GrammarBias`) that want to fall back to their
+        own default draw rather than sampling a still-uniform, no-evidence
+        distribution."""
+        return self._accum.get(category) is not None
+
     def sample(self, category: str, rng: np.random.Generator):
         """Pick a filler for ``category``, biased by accumulated resonance -
         uniform at random until any evidence exists."""
