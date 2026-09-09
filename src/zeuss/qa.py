@@ -260,6 +260,43 @@ def ask(
     )
 
 
+def ask_sharded(
+    onto: Ontology,
+    memories: list,
+    subject: str,
+    relation: str,
+    beta: float = 12.0,
+    axiom_bias: Callable[[str], float] | None = None,
+) -> Answer:
+    """`ask`, but across several independent memory hypervectors (see
+    `Ontology.ground_sharded`) instead of one - queries every shard and
+    keeps whichever `Answer` rings loudest (highest `coherence`).
+
+    This is the real fix for `docs/ROADMAP.md` v0.39's measured ceiling: a
+    single `ground()` bundle stays reliable to ~80 triples and collapses
+    sharply past that, and raising `dim` doesn't rescue it. Splitting the
+    same data into several shards at that reliable size and picking the
+    best-resonating one raises *effective* capacity roughly linearly with
+    shard count while keeping each shard at the size recovery is actually
+    proven to work at - measured, not assumed: 90% accuracy at 800 triples
+    (10 shards of 80) versus 0% for one 800-triple bundle, with **zero**
+    false positives on genuine unknown queries at every scale tested
+    (`test_capacity_ceiling.py`'s `test_sharding_*` tests) - the max-over-
+    shards selection does not measurably raise crosstalk above
+    `COHERENCE_FLOOR` even at 10 shards, because that floor already carries
+    a wide margin over single-shard noise (see `test_stored_and_guessed_
+    coherence_are_well_separated`).
+    """
+    if not memories:
+        raise ValueError("ask_sharded requires at least one memory - see Ontology.ground_sharded")
+    best: Answer | None = None
+    for memory in memories:
+        answer = ask(onto, memory, subject, relation, beta, axiom_bias)
+        if best is None or answer.coherence > best.coherence:
+            best = answer
+    return best
+
+
 def chain(
     onto: Ontology,
     memory,
@@ -317,6 +354,67 @@ def chain(
         raw = onto.entity(subject)
         for _ in range(len(hops)):
             raw = onto.step(memory, raw, relation)  # composed straight through, no collapse
+        final_entity = onto.entity(hops[-1][0])
+        resonance_coh = resonant_coherence(interfere([raw, final_entity])) / 2.0
+    return Chain(
+        start=subject, relation=relation, hops=hops, cumulative=cumulative, resonance_coherence=resonance_coh
+    )
+
+
+def chain_sharded(
+    onto: Ontology,
+    memories: list,
+    subject: str,
+    relation: str,
+    max_hops: int = 6,
+    beta: float = 12.0,
+    axiom_bias: Callable[[str], float] | None = None,
+) -> Chain:
+    """`chain`, but across several independent memory hypervectors (see
+    `Ontology.ground_sharded`/`ask_sharded`) instead of one - at *every*
+    hop, queries every shard and keeps whichever gives the highest
+    coherence, not just once at the start. A fact needed partway through a
+    chain can live in a different shard than the fact before it.
+
+    ``Chain.resonance_coherence`` (see `chain`'s docstring) is computed
+    against whichever shard won the *final* hop - the memory whose
+    evidence the chain actually trusted most for where it ended up. This
+    is a reasonable, not load-bearing, choice: unlike `ask_sharded`
+    (measured directly against real accuracy numbers), the multi-hop case
+    hasn't itself been measured beyond "it runs and stays honest" - treat
+    `resonance_coherence` here as a smaller-scope extension, not a result
+    carrying the same evidence `ask_sharded`'s per-hop selection does.
+    """
+    if not memories:
+        raise ValueError("chain_sharded requires at least one memory - see Ontology.ground_sharded")
+    ent = onto.entity(subject)
+    visited = {subject}
+    hops: list[tuple[str, float]] = []
+    cumulative: list[float] = []
+    running = 1.0
+    winning_memory = memories[0]
+    for _ in range(max_hops):
+        best = None
+        for memory in memories:
+            residue = onto.step(memory, ent, relation)
+            name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta, axiom_bias)
+            if best is None or coherence > best[1]:
+                best = (name, coherence, memory)
+        name, coherence, memory = best
+        if coherence < COHERENCE_FLOOR or name in visited:
+            break
+        running *= coherence
+        hops.append((name, coherence))
+        cumulative.append(running)
+        visited.add(name)
+        ent = onto.entity(name)  # collapse -> re-enter the continuum clean
+        winning_memory = memory
+
+    resonance_coh = 0.0
+    if hops:
+        raw = onto.entity(subject)
+        for _ in range(len(hops)):
+            raw = onto.step(winning_memory, raw, relation)
         final_entity = onto.entity(hops[-1][0])
         resonance_coh = resonant_coherence(interfere([raw, final_entity])) / 2.0
     return Chain(

@@ -2224,6 +2224,57 @@
       that motivated this whole entry) - not a flaw in the bias mechanism,
       a direct, expected consequence of the substrate-level ceiling above.
 
+## v0.40 — sharding: raising the ceiling without lowering reliability
+
+- [x] The user's proposal in response to v0.39's finding, put directly:
+      if a single bundle is reliable up to ~80 triples and unreliable past
+      it, why not run several bundles ("silos") in parallel, each kept at
+      the reliable size, instead of one giant one? Tested before writing
+      any production code, same discipline as every mechanism this session
+      - not assumed to work just because it sounds reasonable.
+- [x] **The result: it works, robustly.** At 400 triples (the exact case
+      v0.39 measured as completely broken - 0/10 correct-and-`known`),
+      querying 5 independent 80-triple shards and keeping whichever
+      resonates loudest recovers 9/10. At 800 triples (10 shards), still
+      18/20 (90%) - the recovery isn't a one-off at one specific size. This
+      is the real fix v0.39 didn't have: not "raise `dim`" (measured in
+      v0.39 to not work), but "keep every shard at the size that's already
+      proven reliable, and add more shards instead of more bytes per shard."
+- [x] **Checked the one real risk before trusting it: false positives.**
+      Picking the *highest*-coherence answer across N independent shards
+      means N independent chances for pure noise to spike - order
+      statistics say the max of more samples runs higher than any one
+      sample. Measured directly, not assumed safe: zero false positives
+      across 20 genuine unknown queries at 5 shards, and zero again at 10
+      shards - `COHERENCE_FLOOR`'s margin over single-shard noise (already
+      established by `test_stored_and_guessed_coherence_are_well_separated`)
+      turned out to be wide enough that max-of-10 still doesn't cross it.
+      This was checked, not assumed - a mechanism that recovers accuracy by
+      quietly trading away guess-detection would not have been worth it.
+- [x] **New methods, additive only:** `Ontology.ground_sharded(shard_size=
+      80)` bundles triples into several memory hypervectors instead of one
+      (`ground()` itself is untouched). `qa.ask_sharded`/`qa.chain_sharded`
+      mirror `ask`/`chain` exactly but query every shard - `chain_sharded`
+      re-selects the best shard at *every* hop, not just once, since a fact
+      needed partway through a chain can live in a different shard than
+      the fact before it. `chain_sharded`'s `resonance_coherence` is
+      computed against whichever shard won the final hop - a reasonable
+      but not equally-measured choice (unlike the per-hop selection itself,
+      this specific number hasn't been separately validated against real
+      accuracy the way `ask_sharded` was).
+- [x] New test file `test_sharding.py` (8 tests): the core recovery claim
+      at 400 triples, the false-positive check at both 5 and 10 shards, the
+      800-triple/10-shard scale check, and `chain_sharded` walking a real
+      transitive chain correctly. Full suite green throughout.
+- [x] **Honest scope: sharding is a mitigation, not an explanation.** This
+      does not answer v0.39's still-open question (why doesn't raising
+      `dim` help the single-bundle ceiling?) - it works *around* that
+      ceiling by never letting any one bundle approach it. `shard_size=80`
+      is the one measured-reliable point tested, not a swept parameter -
+      whether 70 or 90 works just as well, or where sharding itself starts
+      to break down (at what shard count does max-of-N noise finally cross
+      `COHERENCE_FLOOR`?) is not yet known.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

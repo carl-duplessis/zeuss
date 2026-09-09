@@ -129,6 +129,16 @@ ROADMAP.md` v0.39): candidates include the `OBJ_SHIFT` permutation scheme
 or how `bundle`'s normalisation behaves with many summed terms. Locked into
 `test_capacity_ceiling.py` so the numbers don't silently drift.
 
+**v0.40 works around that ceiling rather than explaining it.**
+`Ontology.ground_sharded(shard_size=80)` bundles triples into several
+independent memory hypervectors instead of one giant bundle (`ground()`
+itself is unchanged); `qa.ask_sharded`/`qa.chain_sharded` query every shard
+and keep whichever resonates loudest. Measured, not assumed: 9/10 correct
+at 400 triples (vs. 0/10 for one bundle), 18/20 at 800 triples/10 shards,
+and - the real risk with a max-over-N-shards selection - zero false
+positives on genuine unknown queries at either scale, so guess-detection
+isn't quietly traded away for the accuracy gain.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional

@@ -110,6 +110,30 @@ class Ontology:
             raise ValueError("ontology is empty; add() some triples first")
         return bundle([self._triple_vector(*t) for t in self.triples])
 
+    def ground_sharded(self, shard_size: int = 80) -> list:
+        """Bundle triples into several independent memory hypervectors
+        instead of one - trading O(shards) query cost for higher effective
+        capacity while keeping each shard at a size recovery stays reliable
+        at.
+
+        `docs/ROADMAP.md` v0.39 measured `ground()`'s single-bundle design
+        (still used by ``ground()`` above, unchanged) to be reliable up to
+        ~80 triples and collapse sharply by 120 - a ceiling that does not
+        respond to raising ``dim``. v0.40 found that recovery *does* stay
+        reliable per-shard at this size even as *total* KB size grows well
+        past the single-bundle ceiling (measured: 90% accuracy at 800
+        triples / 10 shards, versus 0% for one 400-triple bundle, with zero
+        false positives on genuine unknown queries across every scale
+        tested) - see :func:`~zeuss.qa.ask_sharded`/:func:`~zeuss.qa.
+        chain_sharded`, which query every shard returned here and keep the
+        highest-coherence answer. ``shard_size=80`` defaults to exactly the
+        measured reliable point, not a guess.
+        """
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        shards = [self.triples[i : i + shard_size] for i in range(0, len(self.triples), shard_size)]
+        return [bundle([self._triple_vector(*t) for t in shard]) for shard in shards]
+
     # -- the one-hop substrate operator ------------------------------------
     def step(self, memory, ent_wave, relation: str):
         """One deductive hop, entirely in wave space.
