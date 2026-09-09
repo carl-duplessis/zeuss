@@ -78,6 +78,7 @@ from .dsl import children as _children
 from .dsl import count_nodes, evaluate, rebuild
 from .grammar_bias import GrammarBias
 from .motif_bias import MotifArchive, context_key
+from .numeric_bias import numeric_recursion_template
 from .resonance_bias import ResonantBias
 from .semantic_bias import boolean_backprop_template
 
@@ -1108,6 +1109,7 @@ def random_program(
     allow_semantic_bias: bool = False,
     examples: "list[Example] | None" = None,
     fuel_budget: int = 60,
+    allow_numeric_bias: bool = False,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -1188,11 +1190,31 @@ def random_program(
     one. Checked last, same ``template_rate`` gate as the other three
     templates (see ``docs/ROADMAP.md`` v0.31 for the honest measured
     result). Default ``False``: a true no-op for every existing caller.
+
+    ``allow_numeric_bias`` enables numeric relationship-mining for recursive
+    targets (see :mod:`.numeric_bias`) - the recursion-domain counterpart to
+    ``allow_semantic_bias``: given a dense-enough ``(param, output)`` table,
+    it reads a recurrence (``step``/``op``/``delta``/``combine_kind``/base
+    case) directly off the table's own values instead of drawing hole-
+    fillers randomly or hoping ``ResonantBias`` eventually learns them. The
+    mined result is built via the exact same
+    :func:`_build_template_node` used by :func:`_recursive_template`, so it
+    is a genuine ``_recursive_template``-shaped node - every existing
+    mechanism that already operates on that shape (hole mutation, per-family
+    elitism, ``ResonantBias`` reinforcement) applies to it automatically.
+    Checked right after :func:`_recursive_template`'s own draw, independent
+    ``template_rate`` roll. Default ``False``: a true no-op for every
+    existing caller (see ``docs/ROADMAP.md`` v0.32 for the honest measured
+    result).
     """
     if allow_recursion and allow_recursion_template and template_rate > 0 and rng.random() < template_rate:
         template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias, delta_p1)
         if template is not None:
             return template
+    if allow_recursion and allow_numeric_bias and examples and template_rate > 0 and rng.random() < template_rate:
+        numeric_node = numeric_recursion_template(inputs, tuple(list_inputs), examples, rng, _build_template_node)
+        if numeric_node is not None:
+            return numeric_node
     if list_inputs and allow_fold_template and template_rate > 0 and rng.random() < template_rate:
         fold_template, _fold_choices = _fold_template(tuple(list_inputs), rng, fold_bias)
         if fold_template is not None:
@@ -1280,6 +1302,7 @@ def _replace_at_scoped(
     allow_semantic_bias: bool = False,
     examples: "list[Example] | None" = None,
     fuel_budget: int = 60,
+    allow_numeric_bias: bool = False,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
@@ -1310,6 +1333,10 @@ def _replace_at_scoped(
             template, _choices = _recursive_template(inputs, list_inputs, rng, bias, delta_p1)
             if template is not None:
                 return template
+        if allow_recursion and allow_numeric_bias and examples and template_rate > 0 and rng.random() < template_rate:
+            numeric_node = numeric_recursion_template(inputs, list_inputs, examples, rng, _build_template_node)
+            if numeric_node is not None:
+                return numeric_node
         if list_inputs and allow_fold_template and template_rate > 0 and rng.random() < template_rate:
             fold_node, _fold_choices = _fold_template(list_inputs, rng, fold_bias)
             if fold_node is not None:
@@ -1355,6 +1382,7 @@ def _replace_at_scoped(
         "allow_semantic_bias": allow_semantic_bias,
         "examples": examples,
         "fuel_budget": fuel_budget,
+        "allow_numeric_bias": allow_numeric_bias,
     }
 
     if isinstance(node, Let):
@@ -1444,6 +1472,7 @@ def mutate(
     allow_semantic_bias: bool = False,
     examples: "list[Example] | None" = None,
     fuel_budget: int = 60,
+    allow_numeric_bias: bool = False,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring).
@@ -1519,6 +1548,7 @@ def mutate(
         allow_semantic_bias=allow_semantic_bias,
         examples=examples,
         fuel_budget=fuel_budget,
+        allow_numeric_bias=allow_numeric_bias,
     )
 
 
@@ -1605,6 +1635,7 @@ def synthesize(
     grammar_bias: "GrammarBias | None" = None,
     allow_shape_elitism: bool = False,
     allow_semantic_bias: bool = False,
+    allow_numeric_bias: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     delta_p1_start: float = 0.15,
@@ -1755,6 +1786,22 @@ def synthesize(
     see ``docs/ROADMAP.md`` v0.31 for the honest measured result. Default
     ``False``: a true no-op for every existing caller.
 
+    ``allow_numeric_bias`` enables an eighth mechanism (see
+    :mod:`.numeric_bias`) - the recursion-domain counterpart to
+    ``allow_semantic_bias``: given a dense-enough ``(param, output)`` table,
+    it mines a recurrence directly from the table's own values (which
+    ``step``/``op``/``delta``/``combine_kind``/base case fit exactly,
+    checked without any random search) instead of drawing hole-fillers
+    randomly or hoping ``ResonantBias`` learns them over many generations.
+    The mined result is built via the same :func:`_build_template_node`
+    :func:`_recursive_template` itself uses, so it is a genuine
+    ``_recursive_template``-shaped node - every existing mechanism that
+    already operates on that shape (hole mutation, per-family elitism,
+    ``ResonantBias`` reinforcement) applies to it with no further changes
+    anywhere else in this function. Default ``False``: a true no-op for
+    every existing caller (see ``docs/ROADMAP.md`` v0.32 for the honest
+    measured result).
+
     Returns ``(best_node, beta_trace, verified)``. ``verified`` re-runs
     :func:`program_energy` on the winner one more time, post-hoc - never
     trust the search's own bookkeeping without re-checking.
@@ -1793,7 +1840,7 @@ def synthesize(
         random_program(
             inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
             allow_bool_template, bool_bias, allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-            allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+            allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
         )
         for _ in range(population_size)
     ]
@@ -1906,7 +1953,7 @@ def synthesize(
                 random_program(
                     inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
                     allow_bool_template, bool_bias, allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-            allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+            allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
                 )
                 for _ in range(population_size)
             ]
@@ -2087,7 +2134,7 @@ def synthesize(
                     template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
                 )
                 next_population.append(refined)
         for fold_template_node in best_fold_template_node.values():
@@ -2104,7 +2151,7 @@ def synthesize(
                     fold_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
                 )
                 next_population.append(fold_refined)
         for bool_template_node in best_bool_template_node.values():
@@ -2121,7 +2168,7 @@ def synthesize(
                     bool_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
                 )
                 next_population.append(bool_refined)
         for shape_node in best_shape_node.values():
@@ -2140,7 +2187,7 @@ def synthesize(
                     shape_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
                 )
                 next_population.append(shape_refined)
         while len(next_population) < population_size:
@@ -2152,7 +2199,7 @@ def synthesize(
                     population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget, allow_numeric_bias,
                 )
             next_population.append(child)
         population = next_population

@@ -1637,6 +1637,111 @@
       didn't.
 
 
+## v0.32 — numeric relationship-mining: the same fix for recursion
+
+- [x] Direct follow-up to v0.31's own scoping note, per explicit user
+      request ("continue with numeric relationship-mining over the example
+      table"): semantic backpropagation fixed leap year by acting at
+      generation time using the actual example data instead of
+      reinforcing/protecting whatever blind growth produced, but was
+      scoped to boolean compound targets only. `2**n`/Fibonacci have the
+      same *character* of failure (`_recursive_template`'s own docstring:
+      "under 5% of random depth-4 trees even contain a `Letrec` with an
+      `If`-shaped body") but need a different, arithmetic-native
+      technique - reading the recurrence directly off the given
+      `(param, output)` table, the way a human would spot one from a value
+      table (compute `y_n / y_(n-1)`, notice it's constant).
+- [x] Built `tier4_synthesis/numeric_bias.py`: `mine_recursion_choices`
+      searches every `(combine_kind, step, delta, op)` combination
+      (`param_recur`/`double_recur` x step in `{1,2}` x delta in `{0,1}` x
+      five arithmetic ops) for an *exact* fit against the table - every row
+      a candidate can check (both its needed offsets present in the table)
+      must match exactly, not a best-effort score, and at least 3 rows must
+      be checkable (guards against a spurious "fit" on a table too small to
+      distinguish a real relationship from luck). The base case
+      (`base_kind`/`base_val`/`cmp`/`base_const`) is then derived from
+      whichever rows the winning recurrence *couldn't* check at all - valid
+      only when those rows form a contiguous prefix from the table's
+      smallest value, the one condition that makes `param <= base_const`
+      actually generalize to inputs *outside* the table too. Deliberately
+      reuses `search.py`'s own `_build_template_node`/`TEMPLATE_CATEGORIES`
+      schema (passed in by the caller, avoiding a circular import) rather
+      than building its own tree - a mined result is *literally* a
+      `_recursive_template`-shaped `Letrec`, so every existing mechanism
+      that already operates on that shape (`extract_template_choices`,
+      hole mutation, per-family elitism, `ResonantBias` reinforcement)
+      applies to it automatically, with zero changes needed anywhere else
+      in `search.py` beyond the two generation entry points.
+- [x] Wired in as an eighth opt-in (`allow_numeric_bias`, default `False`,
+      true no-op), checked immediately after `_recursive_template`'s own
+      draw in `random_program`/`_replace_at_scoped` (own independent
+      `template_rate` roll) - reusing the `examples`/`fuel_budget`
+      plumbing v0.31 already added to these functions, no further new
+      plumbing needed. `mutate()` needed no changes at all - a mined node
+      is structurally indistinguishable from one `_recursive_template`
+      itself could have built, so `mutate`'s existing hole-mutation and
+      full-regrowth paths already handle it correctly.
+- [x] The measurement - the actual deliverable. Same configurations as
+      `test_resonant_bias_discovers_recursion_reliably_across_seeds`/
+      `test_resonant_bias_can_discover_fibonacci` (population=800,
+      generations=150, fuel_budget=200), `allow_recursion_template=False`
+      so `_recursive_template`'s own draw can't be doing the work:
+      - `2**n` (8 seeds): **8/8 verified and generalizing** (held out to
+        n=6,7,8).
+      - Fibonacci, 0-indexed, same 7-example table (8 seeds): **8/8
+        verified and generalizing** (held out to n=7,8,9) - including
+        seeds 4 and 7, the two residual failures already on record for the
+        existing template+`ResonantBias` mechanism (seed 4 never verified;
+        seed 7 "verified" with a coincidental, non-generalizing expression
+        - `test_resonant_bias_can_discover_fibonacci`'s own docstring).
+      - Both sweeps together ran in about 4 seconds total (measured via
+        the committed test) - a successful mining draw typically solves
+        the target within the first few generations, since the recurrence
+        is read directly off the table rather than searched for across a
+        population.
+      Verified directly with unit-level round-trips too:
+      `mine_recursion_choices` reconstructs the *exact* expected `choices`
+      dict for both `2**n` (`combine_kind="double_recur"`, `op="+"`,
+      `delta=0`, `base_kind="const"`, `base_val=1`) and Fibonacci
+      (`delta=1`, `base_kind="param"`) directly from their tables, with no
+      randomness involved at all - not just "the search eventually finds
+      it," but "the relationship is read off the data deterministically."
+- [x] Net finding: this is the second of the eight general mechanisms
+      tried across v0.28-v0.32 that actually fixes its target class (after
+      v0.31's leap-year fix), confirming the same diagnosis in a different
+      domain - the recursion failures were generative (the correct shape
+      essentially never assembling under blind growth), not selective, and
+      a generation-time mechanism that uses the actual data fixes both
+      residual gaps (2**n's own reliability was already good via the hand
+      template, but Fibonacci's seeds 4/7 were genuine, previously-
+      unresolved failures) outright rather than incrementally.
+- [x] Scope, stated honestly: requires the example table to be dense
+      enough to resolve a candidate's needed offsets (works cleanly for a
+      contiguous or near-contiguous range, exactly the shape every
+      recursion target in this project's own test suite already uses) and
+      the base-case rows to form a contiguous prefix from the table's
+      smallest value. A sparse or non-contiguous example set returns
+      `None` cleanly (falls through to blind growth/`_recursive_template`,
+      unaffected) rather than guessing - checked directly
+      (`test_mine_recursion_choices_returns_none_for_sparse_or_non_
+      recursive_tables`).
+- [x] New tests: `test_build_table_rejects_non_integer_and_boolean_targets`,
+      `test_mine_recursion_choices_discovers_pow2_exactly`/`_discovers_
+      fibonacci_exactly` (exact deterministic round-trips, not
+      probabilistic claims), `test_mine_recursion_choices_returns_none_
+      for_sparse_or_non_recursive_tables`, `test_numeric_recursion_
+      template_builds_a_generalizing_pow2_node` (checked out to n=9, well
+      past the 5-example training table), `test_numeric_recursion_
+      template_returns_none_for_non_numeric_or_sparse_targets`,
+      `test_numeric_bias_is_a_true_noop_by_default` (checked directly, not
+      inferred), `test_synth_wrapper_exposes_allow_numeric_bias`, and the
+      measured-result test `test_numeric_bias_solves_pow2_and_fibonacci_
+      reliably_across_seeds` (the full 8+8-seed sweep, committed directly
+      rather than a representative subset - unlike v0.31's leap-year test,
+      the whole sweep runs in seconds, so there's no runtime reason to
+      only assert a subset here).
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

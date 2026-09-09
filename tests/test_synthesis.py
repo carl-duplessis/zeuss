@@ -33,6 +33,11 @@ from zeuss.tier4_synthesis.grammar_bias import (
     save_grammar_bias,
 )
 from zeuss.tier4_synthesis.motif_bias import MotifArchive, collect_motifs, context_key
+from zeuss.tier4_synthesis.numeric_bias import (
+    build_table,
+    mine_recursion_choices,
+    numeric_recursion_template,
+)
 from zeuss.tier4_synthesis.resonance_bias import ResonantBias
 from zeuss.tier4_synthesis.semantic_bias import (
     and_left_target,
@@ -61,6 +66,7 @@ from zeuss.tier4_synthesis.search import (
     _bool_template,
     _build_atom_node,
     _build_bool_template_node,
+    _build_template_node,
     _mutate_bool_template_hole,
     extract_bool_template_choices,
 )
@@ -1623,3 +1629,168 @@ def test_semantic_bias_solves_leap_year_reliably_across_seeds():
         assert verified, f"leap year seed {seed} found nothing"
         for year, expected in held_out:
             assert evaluate(best, {"year": year}, Fuel(200)) == expected, f"seed {seed} didn't generalize"
+
+
+def test_build_table_rejects_non_integer_and_boolean_targets():
+    """`build_table` (see `numeric_bias.py`) is deliberately scoped to
+    integer-valued recursion targets only - `bool` is an `int` subclass in
+    Python but not a numeric recursion target (that's `semantic_bias.py`'s
+    domain), so it must be rejected explicitly rather than silently treated
+    as 0/1."""
+    int_examples = [Example({"n": n}, 2**n) for n in range(5)]
+    assert build_table(int_examples, "n") == {0: 1, 1: 2, 2: 4, 3: 8, 4: 16}
+
+    bool_examples = [Example({"n": n}, n % 2 == 0) for n in range(5)]
+    assert build_table(bool_examples, "n") is None
+
+    mixed_examples = [Example({"n": 0}, 1), Example({"n": True}, 2)]
+    assert build_table(mixed_examples, "n") is None
+
+
+def test_mine_recursion_choices_discovers_pow2_exactly():
+    """The core claim of `numeric_bias.py`: given a dense, contiguous
+    ``(n, 2**n)`` table, the recurrence ``f(n) = f(n-1) + f(n-1)`` (and its
+    base case) is discoverable directly from the table's own values, with
+    no random search - deterministic, not just "found on average"."""
+    table = build_table([Example({"n": n}, 2**n) for n in range(5)], "n")
+    choices = mine_recursion_choices(table)
+    assert choices == {
+        "combine_kind": "double_recur", "op": "+", "step": 1, "delta": 0,
+        "cmp": "<=", "base_const": 0, "base_kind": "const", "base_val": 1,
+    }
+
+
+def test_mine_recursion_choices_discovers_fibonacci_exactly():
+    """The asymmetric case (`delta=1`, `base_kind="param"`) - the one
+    `_recursive_template`'s own random/resonance-biased draw is least
+    reliable at (see `test_resonant_bias_can_discover_fibonacci`'s seeds 4
+    and 7 caveat) - mined exactly and deterministically from the same
+    7-example table that test already uses."""
+    fib = [0, 1, 1, 2, 3, 5, 8]
+    table = build_table([Example({"n": n}, f) for n, f in enumerate(fib)], "n")
+    choices = mine_recursion_choices(table)
+    assert choices == {
+        "combine_kind": "double_recur", "op": "+", "step": 1, "delta": 1,
+        "cmp": "<=", "base_const": 1, "base_kind": "param",
+    }
+
+
+def test_mine_recursion_choices_returns_none_for_sparse_or_non_recursive_tables():
+    """Honest scope boundary: a table too sparse to resolve any candidate's
+    needed offsets, or one with no arithmetic recurrence at all, must
+    return `None` cleanly (falls through to blind growth/`_recursive_
+    template`) rather than guessing or raising."""
+    sparse_table = build_table([Example({"n": n}, 2**n) for n in (0, 5)], "n")
+    assert mine_recursion_choices(sparse_table) is None
+
+    # 5 unrelated (n, y) pairs with no consistent recurrence.
+    random_table = {0: 3, 1: 11, 2: 2, 3: 19, 4: 7}
+    assert mine_recursion_choices(random_table) is None
+
+
+def test_numeric_recursion_template_builds_a_generalizing_pow2_node():
+    """Round-trip check of `numeric_recursion_template` end to end,
+    independent of the full GP search - the mined node must not just match
+    the training table but genuinely generalize far past it, confirming
+    this is a real recurrence, not curve-fitting to the given rows."""
+    examples = [Example({"n": n}, 2**n) for n in range(5)]
+    node = numeric_recursion_template(["n"], (), examples, np.random.default_rng(0), _build_template_node)
+    assert node is not None
+    for n in range(10):
+        assert evaluate(node, {"n": n}, Fuel(2000)) == 2**n
+
+
+def test_numeric_recursion_template_returns_none_for_non_numeric_or_sparse_targets():
+    """Mirrors `test_boolean_backprop_template_returns_none_for_non_boolean_
+    targets`: the mechanism must not try to apply where it doesn't belong -
+    a boolean target (semantic_bias's own domain) or too sparse a table."""
+    bool_examples = [Example({"n": n}, n % 2 == 0) for n in range(5)]
+    assert numeric_recursion_template(["n"], (), bool_examples, np.random.default_rng(0), _build_template_node) is None
+
+    sparse_examples = [Example({"n": n}, 2**n) for n in (0, 5)]
+    assert numeric_recursion_template(["n"], (), sparse_examples, np.random.default_rng(0), _build_template_node) is None
+
+
+def test_numeric_bias_is_a_true_noop_by_default():
+    """`allow_numeric_bias=False` (the default) must leave every existing
+    caller's behavior bit-for-bit unchanged, mirroring `test_semantic_bias_
+    is_a_true_noop_by_default`. Checked directly, not just inferred."""
+    examples = [Example({"x": x}, x + 1) for x in range(4)]
+    program_a = random_program(["x"], np.random.default_rng(7), max_depth=4)
+    program_b = random_program(
+        ["x"], np.random.default_rng(7), max_depth=4, allow_numeric_bias=False, examples=examples
+    )
+    assert pretty(program_a) == pretty(program_b)
+
+    best_c, trace_c, verified_c = synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3, rng=np.random.default_rng(2)
+    )
+    best_d, trace_d, verified_d = synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3,
+        allow_numeric_bias=False, rng=np.random.default_rng(2),
+    )
+    assert pretty(best_c) == pretty(best_d)
+    assert trace_c == trace_d
+    assert verified_c == verified_d
+
+
+def test_synth_wrapper_exposes_allow_numeric_bias():
+    """Mirrors `test_synth_wrapper_exposes_allow_semantic_bias`: guards
+    against the same class of bug recurring for the parameter this entry
+    added."""
+    from zeuss.tier4_synthesis.synth import synthesize as public_synthesize
+
+    examples = [Example({"n": n}, 2**n) for n in range(5)]
+    rng = np.random.default_rng(0)
+    best, _trace, verified = public_synthesize(
+        ["n"], examples, population_size=100, max_generations=30, max_depth=4,
+        allow_recursion=True, allow_recursion_template=False, allow_numeric_bias=True, rng=rng,
+    )
+    assert best is not None
+    assert isinstance(verified, bool)
+
+
+def test_numeric_bias_solves_pow2_and_fibonacci_reliably_across_seeds():
+    """Honest measured positive result for `docs/ROADMAP.md` v0.32 - the
+    recursion-domain counterpart to v0.31's leap-year result. At
+    `test_resonant_bias_discovers_recursion_reliably_across_seeds`'s own
+    configuration (population=800, generations=150, fuel_budget=200) with
+    `allow_recursion_template=False` (so `_recursive_template`'s own
+    random/resonance-biased draw can't be doing the work): **8/8 seeds
+    verified and generalizing** for `2**n`. At `test_resonant_bias_can_
+    discover_fibonacci`'s configuration (population=800, generations=150,
+    fuel_budget=200, same 7-example table), also with `allow_recursion_
+    template=False`: **8/8 seeds verified and generalizing** for
+    Fibonacci - including seeds 4 and 7, the two documented residual
+    failures for the existing template+`ResonantBias` mechanism (seed 4
+    never verified; seed 7 "verified" with a coincidental, non-generalizing
+    expression - see that test's own docstring). Both sweeps together ran
+    in about 2 seconds total - a successful mining draw typically solves
+    the target within the first few generations rather than needing the
+    full budget, since the recurrence is read directly off the table rather
+    than searched for.
+    """
+    pow2_examples = [Example({"n": n}, 2**n) for n in range(5)]
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        best, _trace, verified = synthesize(
+            ["n"], pow2_examples, population_size=800, max_generations=150, max_depth=4,
+            allow_recursion=True, allow_recursion_template=False, allow_numeric_bias=True,
+            fuel_budget=200, rng=rng,
+        )
+        assert verified, f"2**n seed {seed} failed to verify"
+        for n, expected in [(6, 64), (7, 128), (8, 256)]:
+            assert evaluate(best, {"n": n}, Fuel(2000)) == expected, f"2**n seed {seed} didn't generalize"
+
+    fib = [0, 1, 1, 2, 3, 5, 8]
+    fib_examples = [Example({"n": n}, f) for n, f in enumerate(fib)]
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        best, _trace, verified = synthesize(
+            ["n"], fib_examples, population_size=800, max_generations=150, max_depth=4,
+            allow_recursion=True, allow_recursion_template=False, allow_numeric_bias=True,
+            fuel_budget=200, rng=rng,
+        )
+        assert verified, f"fibonacci seed {seed} failed to verify"
+        for n, expected in [(7, 13), (8, 21), (9, 34)]:
+            assert evaluate(best, {"n": n}, Fuel(2000)) == expected, f"fibonacci seed {seed} didn't generalize"

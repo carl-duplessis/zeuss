@@ -38,6 +38,7 @@ def synthesize(
     grammar_bias: "GrammarBias | None" = None,
     allow_shape_elitism: bool = False,
     allow_semantic_bias: bool = False,
+    allow_numeric_bias: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     rng: np.random.Generator | None = None,
@@ -98,6 +99,16 @@ def synthesize(
     compound targets only - see :func:`.search.synthesize`'s docstring and
     ``docs/ROADMAP.md`` v0.31 for the honest measured result.
 
+    ``allow_numeric_bias`` opts into an eighth mechanism (see
+    :mod:`.numeric_bias`) - the recursion-domain counterpart to
+    ``allow_semantic_bias``: mines a recurrence directly from a dense-enough
+    ``(param, output)`` example table instead of drawing hole-fillers
+    randomly. Builds a genuine ``_recursive_template``-shaped node, so every
+    existing recursion mechanism (hole mutation, per-family elitism,
+    ``ResonantBias`` reinforcement) already applies to it - see
+    :func:`.search.synthesize`'s docstring and ``docs/ROADMAP.md`` v0.32 for
+    the honest measured result.
+
     Returns ``(best_node, beta_trace, verified)`` - see :func:`.search.synthesize`.
     """
     return _synthesize(
@@ -116,6 +127,7 @@ def synthesize(
         grammar_bias=grammar_bias,
         allow_shape_elitism=allow_shape_elitism,
         allow_semantic_bias=allow_semantic_bias,
+        allow_numeric_bias=allow_numeric_bias,
         resonant_bias=resonant_bias,
         fuel_budget=fuel_budget,
         rng=rng,
