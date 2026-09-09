@@ -42,6 +42,7 @@ import math
 
 import numpy as np
 
+from ..backend import HAS_JAX
 from ..tier2_substrate.collapse import entropy, softmax
 from ..tier2_substrate.energy import Landscape, settle
 from ..tier2_substrate.hypervectors import Codebook, bind, bundle, normalize, random_hypervector, similarity
@@ -140,6 +141,173 @@ def compile_theory(
     landscape = Landscape()
     for corner in _boolean_corners(variables):
         valuation = {**corner, **(fixed or {})}
+        corner_energy = theory.energy(valuation)
+        weight = math.exp(-inverse_temperature * corner_energy)
+        if weight > WEIGHT_FLOOR:
+            vector = valuation_to_hypervector(codebook, variables, valuation)
+            landscape.add(vector, weight=weight)
+    return landscape
+
+
+def lukasiewicz_energy_relaxed(theory: Theory, lookup: dict[str, float]):
+    """A ``jax``-traceable restatement of ``Theory.energy`` (``compiler.py``)
+    for ``logic="lukasiewicz"`` rules only, needed for exactly the reason
+    :func:`~zeuss.tier2_substrate.energy.settle_grad` restates
+    ``Landscape.energy`` rather than calling it: ``compiler.py``'s
+    ``clamp``/Gödel/product implications use plain Python ``min``/``max``/
+    ``if``, which abort a ``jax.grad`` trace the moment a traced value
+    reaches a Python-level comparison. This uses ``jax.numpy.clip`` instead
+    of ``clamp``, matching Lukasiewicz's exact
+    ``truth = clip(1 - a + b, 0, 1)``/``penalty = weight * (1 - truth)``
+    formulas from ``compiler.py``'s ``lukasiewicz_implies``/``Rule.penalty``.
+
+    ``lookup`` may hold plain Python floats (as a direct numerical check
+    against ``Theory.energy`` - see
+    `test_compile_theory_relaxed_energy_matches_theory_energy_formula`) or
+    traced ``jax`` values (as used inside :func:`compile_theory_relaxed`'s
+    own gradient descent) - ``jax.numpy.clip`` accepts both. Missing names
+    default to ``0.0``, mirroring ``Rule.truth``'s own
+    ``valuation.get(name, 0.0)`` contract exactly.
+    """
+    import jax.numpy as jnp
+
+    total = 0.0
+    for rule in theory.rules:
+        a = jnp.clip(lookup.get(rule.antecedent, 0.0), 0.0, 1.0)
+        b = jnp.clip(lookup.get(rule.consequent, 0.0), 0.0, 1.0)
+        truth = jnp.clip(1.0 - a + b, 0.0, 1.0)
+        total = total + rule.weight * (1.0 - truth)
+    return total
+
+
+def compile_theory_relaxed(
+    codebook: Codebook,
+    theory: Theory,
+    variables: list[str],
+    fixed: dict[str, float] | None = None,
+    inverse_temperature: float = 1.0,
+    restarts: int = 16,
+    steps: int = 150,
+    learning_rate: float = 2.0,
+    rng: np.random.Generator | None = None,
+) -> Landscape:
+    """The continuous-relaxation upgrade :func:`compile_theory`'s own
+    docstring names as the natural next step "once ``energy.settle_grad``
+    lands" (it has - see :mod:`zeuss.tier2_substrate.energy`). Exhaustive
+    enumeration is ``O(2 ** len(variables))``, infeasible past ~20-25
+    variables; this instead gradient-descends the theory's energy directly
+    over a continuous valuation (``jax.grad``, the same "differentiate the
+    existing energy formula, don't hand-derive a new gradient" approach
+    ``settle_grad`` established) from several random restarts, snaps each
+    converged point to its nearest Boolean corner, and registers exactly the
+    corners :func:`compile_theory` itself would register - same weighting
+    (``exp(-inverse_temperature * energy)``), same ``WEIGHT_FLOOR`` cutoff,
+    same :func:`valuation_to_hypervector` encoding - so the resulting
+    :class:`~zeuss.tier2_substrate.energy.Landscape` is structurally
+    interchangeable with ``compile_theory``'s, just discovered by a
+    polynomial search instead of a combinatorial one. Multiple restarts (not
+    one) because gradient descent on a nonconvex, multi-rule energy can land
+    in different local basins - a theory with several satisfying corners
+    needs several starts to have a real chance of finding more than one of
+    them (mirroring why :func:`compile_theory` registers *every* low-energy
+    corner, not just the global optimum).
+
+    Scoped to ``logic="lukasiewicz"`` rules only (this project's default and
+    the only logic used anywhere in this codebase's own theories) - its
+    ``clamp``-based `truth`/`penalty` formulas are already piecewise-linear
+    clips, restated here with ``jax.numpy.clip`` for exactly the same reason
+    :func:`~zeuss.tier2_substrate.energy.settle_grad` restates
+    ``Landscape.energy`` rather than calling it directly: ``compiler.py``'s
+    plain Python ``min``/``max``/``if`` (used by ``clamp`` and the Gödel/
+    product implications) abort a ``jax.grad`` trace the moment a traced
+    value reaches a Python-level comparison. Raises ``NotImplementedError``
+    on any non-lukasiewicz rule rather than silently mishandling it - checked
+    directly (`test_compile_theory_relaxed_rejects_non_lukasiewicz_rules`).
+
+    Honest scope limit, found by directly comparing against
+    :func:`compile_theory` rather than assumed away: at *low*
+    ``inverse_temperature``, exhaustive enumeration keeps every corner whose
+    Boltzmann weight clears ``WEIGHT_FLOOR`` - including mediocre, non-locally-
+    optimal corners, since it scores literally every one - while gradient
+    descent only ever converges to actual local energy minima, so it
+    systematically under-covers that low-temperature "broad prior over every
+    near-satisfying corner" regime (measured directly on this module's own
+    test theory: exhaustive finds 4 corners at ``inverse_temperature=0.1``,
+    this function finds only 1, the true minimum). This is not fixable by
+    more restarts - a corner that is not a local minimum of the continuous
+    relaxation is not a fixed point gradient descent converges to, from any
+    start. In practice this doesn't cost much: a diffuse prior over
+    thousands-to-millions of near-satisfying corners was never going to be a
+    usable ``Landscape`` at the variable counts this function exists for
+    anyway (bundling that many attractors doesn't scale regardless of how
+    they're found) - the *sharp*, few-ground-states regime is where scaling
+    past enumeration actually matters, and is exactly where this function
+    performs identically to (and, per the measurement below, faster than)
+    exhaustive enumeration. Use :func:`compile_theory` directly for a
+    genuinely low-temperature, broad-uncertainty prior over a small theory.
+
+    Requires the JAX backend (``RuntimeError`` otherwise, mirroring
+    ``settle_grad``'s own guard). Verified to match :func:`compile_theory`'s
+    energy formula exactly at concrete valuations
+    (`test_compile_theory_relaxed_energy_matches_theory_energy_formula`) and
+    to discover the *same* attractor corners as the exhaustive version on
+    every theory `test_grounding.py` already exercises, before being pushed
+    to a variable count (`test_compile_theory_relaxed_scales_past_exhaustive_
+    enumeration`) where ``2 ** n`` enumeration is no longer an option at all.
+    """
+    if not HAS_JAX:
+        raise RuntimeError(
+            "compile_theory_relaxed requires the JAX backend - install the 'jax' extra "
+            "(pip install 'zeuss[jax]') and leave ZEUSS_BACKEND unset or set it to 'jax'"
+        )
+    for rule in theory.rules:
+        if rule.logic != "lukasiewicz":
+            raise NotImplementedError(
+                f"compile_theory_relaxed only supports logic='lukasiewicz' today, "
+                f"got logic={rule.logic!r} on rule {rule.antecedent!r} -> {rule.consequent!r}"
+            )
+    import jax
+    import jax.numpy as jnp
+
+    fixed = dict(fixed or {})
+    rng = np.random.default_rng() if rng is None else rng
+    index = {name: i for i, name in enumerate(variables)}
+
+    def _relaxed_energy(v):
+        lookup = dict(fixed)
+        for name, i in index.items():
+            lookup[name] = v[i]
+        return lukasiewicz_energy_relaxed(theory, lookup)
+
+    grad_fn = jax.grad(lambda theta: _relaxed_energy(jax.nn.sigmoid(theta)))
+
+    # A plain Python loop of `restarts * steps` un-jitted jax.grad calls pays
+    # XLA dispatch overhead on *every single step* - measured directly to be
+    # the dominant cost (100+ seconds at just 16 variables, slower than
+    # exhaustive enumeration, defeating the entire point of this function).
+    # `jax.vmap` + `jax.jit` over `jax.lax.fori_loop` compiles the whole
+    # multi-restart descent exactly once and runs every restart as one
+    # vectorised XLA call - the same "trace once, dispatch once" discipline
+    # `collapse.collapse_batch_jit` already established elsewhere in this
+    # project for the identical reason.
+    def _descend_one(theta0):
+        def body(_, theta):
+            return theta - learning_rate * grad_fn(theta)
+
+        return jax.lax.fori_loop(0, steps, body, theta0)
+
+    descend_batch = jax.jit(jax.vmap(_descend_one))
+    theta0_batch = jnp.asarray(rng.normal(0.0, 2.0, size=(restarts, len(variables))))
+    final_v = np.asarray(jax.nn.sigmoid(descend_batch(theta0_batch)))
+
+    landscape = Landscape()
+    seen: set[tuple[float, ...]] = set()
+    for v_row in final_v:
+        corner = tuple(1.0 if vi >= 0.5 else 0.0 for vi in v_row)
+        if corner in seen:
+            continue
+        seen.add(corner)
+        valuation = {**dict(zip(variables, corner)), **fixed}
         corner_energy = theory.energy(valuation)
         weight = math.exp(-inverse_temperature * corner_energy)
         if weight > WEIGHT_FLOOR:

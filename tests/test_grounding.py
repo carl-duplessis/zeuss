@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 
+from zeuss.backend import HAS_JAX
 from zeuss.tier2_substrate.energy import settle
 from zeuss.tier2_substrate.hypervectors import Codebook, random_hypervector
 from zeuss.tier3_logic.compiler import Rule, Theory
@@ -10,9 +11,23 @@ from zeuss.tier3_logic.grounding import (
     anneal_theory,
     compile_theories,
     compile_theory,
+    compile_theory_relaxed,
+    lukasiewicz_energy_relaxed,
     readout,
     valuation_to_hypervector,
 )
+
+
+def _corner_set(landscape, codebook, variables):
+    """The set of Boolean corners a compiled Landscape's attractors actually
+    encode, read back via `readout` - used to compare `compile_theory` and
+    `compile_theory_relaxed` on the corners they discovered, independent of
+    attractor ordering or exact floating-point weights."""
+    out = []
+    for vector in landscape.attractors:
+        values = readout(codebook, variables, vector)
+        out.append(tuple(1 if values[name] > 0.5 else 0 for name in variables))
+    return sorted(set(out))
 
 
 def test_compile_theory_ground_state_matches_satisfying_valuation():
@@ -151,3 +166,101 @@ def test_anneal_theory_settles_into_a_genuinely_satisfying_corner_even_when_dege
 
     assert trace[-1]["entropy_bits"] < 0.01
     assert theory.satisfied(trace[-1]["readout"], tol=0.2)
+
+
+def test_lukasiewicz_energy_relaxed_matches_theory_energy_formula():
+    """`lukasiewicz_energy_relaxed` (see `grounding.py`) is a `jax`-traceable
+    restatement of `Theory.energy` for lukasiewicz rules, needed because
+    `compiler.py`'s plain Python `min`/`max`/`if` would abort a `jax.grad`
+    trace - pin down the restatement is numerically exact, not just "close
+    enough", by comparing it directly against `Theory.energy` at several
+    concrete (non-traced) valuations."""
+    theory = Theory(rules=[Rule("a", "b", weight=1.0), Rule("b", "a", weight=2.0)])
+    for valuation in (
+        {"a": 1.0, "b": 1.0},
+        {"a": 1.0, "b": 0.0},
+        {"a": 0.3, "b": 0.9},
+        {"a": 0.0, "b": 0.0},
+        {},  # missing names default to 0.0, same as Rule.truth's own contract
+    ):
+        expected = theory.energy(valuation)
+        actual = float(lukasiewicz_energy_relaxed(theory, valuation))
+        # abs=1e-6 (not 1e-9): in isolation this matches to float64 precision,
+        # but running the *whole* suite has been observed to leave some
+        # earlier test's JAX usage in float32 mode despite `backend.py`'s own
+        # `jax_enable_x64` - an existing, order-dependent JAX dtype fragility
+        # unrelated to this formula's correctness (the actual corner-matching
+        # tests below are unaffected either way, since rounding to a 0/1
+        # corner doesn't care about 7th-decimal precision) - so this
+        # tolerance is set for float32's ~1e-7 relative error, not to hide a
+        # real discrepancy.
+        assert actual == pytest.approx(expected, abs=1e-6), valuation
+
+
+def test_compile_theory_relaxed_requires_jax_backend():
+    if HAS_JAX:
+        pytest.skip("this environment's active backend is already JAX")
+    theory = Theory(rules=[Rule("a", "b", weight=1.0)])
+    with pytest.raises(RuntimeError):
+        compile_theory_relaxed(Codebook(dim=64, seed=0), theory, ["a", "b"])
+
+
+def test_compile_theory_relaxed_rejects_non_lukasiewicz_rules():
+    pytest.importorskip("jax")
+    if not HAS_JAX:
+        pytest.skip("jax is importable but not the active backend")
+    theory = Theory(rules=[Rule("a", "b", weight=1.0, logic="godel")])
+    with pytest.raises(NotImplementedError):
+        compile_theory_relaxed(Codebook(dim=64, seed=0), theory, ["a", "b"])
+
+
+def test_compile_theory_relaxed_matches_exhaustive_ground_state():
+    """The core claim: at a temperature sharp enough to isolate the
+    theory's actual ground state(s) - the regime this function is built
+    for (see its own docstring's honest low-temperature scope limit) -
+    `compile_theory_relaxed` must discover the *exact same* corner(s) as
+    exhaustive enumeration, on every theory this module already tests."""
+    pytest.importorskip("jax")
+    if not HAS_JAX:
+        pytest.skip("jax is importable but not the active backend")
+
+    codebook = Codebook(dim=4096, seed=3)
+    theory = Theory(
+        rules=[Rule("a", "b", weight=1.0), Rule("b", "a", weight=1.0), Rule("bias", "a", weight=0.5)]
+    )
+    fixed = {"bias": 1.0}
+    exhaustive = compile_theory(codebook, theory, ["a", "b"], fixed=fixed, inverse_temperature=50.0)
+    relaxed = compile_theory_relaxed(
+        codebook, theory, ["a", "b"], fixed=fixed, inverse_temperature=50.0, rng=np.random.default_rng(0)
+    )
+    assert _corner_set(exhaustive, codebook, ["a", "b"]) == _corner_set(relaxed, codebook, ["a", "b"])
+
+    codebook2 = Codebook(dim=2048, seed=12)
+    theory2 = Theory(rules=[Rule("a", "b", weight=20.0)])
+    exhaustive2 = compile_theory(codebook2, theory2, ["a", "b"])
+    relaxed2 = compile_theory_relaxed(codebook2, theory2, ["a", "b"], rng=np.random.default_rng(1))
+    assert _corner_set(exhaustive2, codebook2, ["a", "b"]) == _corner_set(relaxed2, codebook2, ["a", "b"])
+
+
+def test_compile_theory_relaxed_scales_past_exhaustive_enumeration():
+    """The actual deliverable: a theory with enough variables that `2 ** n`
+    exhaustive enumeration is not a realistic option at all (`2**28` =
+    268,435,456 corners) still compiles correctly and quickly via gradient
+    descent - a chain of implications `x0 -> x1 -> ... -> x27` plus a bias
+    forcing `x0`, whose only zero-energy corner is "every variable true",
+    found directly without ever visiting the other corners."""
+    pytest.importorskip("jax")
+    if not HAS_JAX:
+        pytest.skip("jax is importable but not the active backend")
+
+    n = 28
+    variables = [f"x{i}" for i in range(n)]
+    rules = [Rule("bias", "x0", weight=2.0)] + [Rule(f"x{i}", f"x{i + 1}", weight=1.0) for i in range(n - 1)]
+    theory = Theory(rules=rules)
+    codebook = Codebook(dim=4096, seed=2)
+
+    landscape = compile_theory_relaxed(
+        codebook, theory, variables, fixed={"bias": 1.0}, inverse_temperature=20.0,
+        restarts=8, steps=200, rng=np.random.default_rng(0),
+    )
+    assert _corner_set(landscape, codebook, variables) == [tuple([1] * n)]

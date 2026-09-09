@@ -96,6 +96,34 @@ def test_settle_adaptive_step_sizes_stay_within_range():
     assert all(lo <= s <= hi for s in step_sizes)
 
 
+def test_settle_adaptive_temperature_is_a_true_noop_by_default():
+    """`temperature=0.0` (the default - see energy.py v0.33) must reproduce
+    the exact prior behavior bit-for-bit, mirroring this project's own
+    established true-no-op convention for every new opt-in parameter.
+    Checked directly, not inferred from the code's `if temperature > 0.0`
+    guard shape."""
+    rng, a, _b, land = _two_attractor_landscape(2048, seed=0)
+    z0 = normalize(a * np.exp(1j * rng.normal(0.0, 0.2, size=a.shape[0])))
+    z_a, e_a, s_a = settle_adaptive(land, z0, max_steps=50, rng=np.random.default_rng(1))
+    z_b, e_b, s_b = settle_adaptive(land, z0, max_steps=50, temperature=0.0, rng=np.random.default_rng(1))
+    assert np.allclose(z_a, z_b)
+    assert np.allclose(e_a, e_b)
+    assert s_a == s_b
+
+
+def test_settle_adaptive_temperature_explores_thermally():
+    """`temperature > 0.0` must actually perturb the trajectory (the same
+    von-Mises-like phase noise `settle` already injects) - a real behavior
+    change, not just an accepted-but-ignored parameter."""
+    rng, a, _b, land = _two_attractor_landscape(2048, seed=0)
+    z0 = normalize(a * np.exp(1j * rng.normal(0.0, 0.2, size=a.shape[0])))
+    z_cold, _e_cold, _s_cold = settle_adaptive(land, z0, max_steps=50, rng=np.random.default_rng(1))
+    z_hot, _e_hot, _s_hot = settle_adaptive(
+        land, z0, max_steps=50, temperature=0.3, rng=np.random.default_rng(1)
+    )
+    assert not np.allclose(z_cold, z_hot)
+
+
 def test_settle_grad_requires_jax_backend():
     if HAS_JAX:
         pytest.skip("this environment's active backend is already JAX")

@@ -86,9 +86,11 @@ def settle_adaptive(
     step_size_range: tuple[float, float] = (0.05, 0.5),
     energy_tol: float = 1e-4,
     inverse_temperature: float = 8.0,
+    temperature: float = 0.0,
     rng: np.random.Generator | None = None,
 ):
-    """Deterministic descent with a step size that adapts to local complexity.
+    """Descent with a step size that adapts to local complexity - optionally
+    thermal, unlike before.
 
     "Liquid time-step": the step size for the *next* move scales with how much
     energy the *previous* move actually removed. A small improvement (near a
@@ -99,6 +101,19 @@ def settle_adaptive(
     ``max_steps``. This is plain adaptive step-size control, not a neural ODE
     solver - the concrete, testable content behind "adapts its time-step to
     problem complexity" rather than a literal claim of continuous-time dynamics.
+
+    ``temperature`` (default ``0.0``, matching every prior caller's exact
+    behavior - a true no-op) injects the same von-Mises-like phase noise
+    :func:`settle` already does, after each adaptive step - added so the
+    adaptive-step-size mechanism and probabilistic exploration aren't
+    mutually exclusive; before this, only plain :func:`settle` could explore
+    thermally, and only this function could adapt its own step size.
+    ``plateau_steps``' convergence check uses the improvement *before* noise
+    is applied (the noise itself perturbs energy every step, which would
+    otherwise make "3 consecutive tiny-improvement steps" nearly impossible
+    to ever trigger at ``temperature > 0`` - convergence should track whether
+    the *descent* has stalled, not whether thermal noise happens to be
+    quiet).
 
     Returns ``(z_final, energies, step_sizes)`` - ``step_sizes`` is the trace
     of step sizes actually used, direct evidence the adaptation happened.
@@ -115,14 +130,20 @@ def settle_adaptive(
         t = landscape.target(z, inverse_temperature)
         z = normalize((1.0 - step_size) * z + step_size * t)
         e = landscape.energy(z, inverse_temperature)
-        energies.append(e)
         step_sizes.append(step_size)
 
-        improvement = prev_energy - e  # positive = energy went down
+        improvement = prev_energy - e  # positive = energy went down, before any noise
         if abs(improvement) < energy_tol:
             plateau_steps += 1
         else:
             plateau_steps = 0
+
+        if temperature > 0.0:
+            noise = rng.normal(0.0, temperature, size=z.shape[0])
+            z = normalize(z * xp.exp(1j * xp.asarray(noise, dtype=RDTYPE)))
+            e = landscape.energy(z, inverse_temperature)
+        energies.append(e)
+
         if plateau_steps >= 3:
             break
 

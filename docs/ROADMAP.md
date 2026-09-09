@@ -1742,6 +1742,125 @@
       only assert a subset here).
 
 
+## v0.33 — Frontier 2, staged: scaling past `O(2**n)` and rules that emerge from data
+
+- [x] Direct pivot from the tier4 synthesis work (v0.28-v0.32): asked to step
+      back from per-target patches and fully realize `VISION.md`'s three
+      "frontiers" - dynamic-dimensionality collapse, energy-landscape logic,
+      resonance/interference deduction - staged, highest-leverage first.
+      Direct code research (not docs) found the actual gap size differs
+      hugely per frontier: Frontier 2 (energy landscapes) is the most mature
+      and ties directly into the tier4 work just hardened, with two
+      concrete, self-acknowledged gaps; Frontier 3 (resonance) has real,
+      tested math with *zero* production call sites anywhere in the repo;
+      Frontier 1 (dynamic dimensionality) already has the right primitive
+      built (`participation_ratio`/`dimensional_collapse`) but wired into
+      nothing downstream. User's call: Frontier 2 first. This entry is that
+      stage; Frontiers 3 and 1 are staged next (see the plan already on
+      record for exact scope).
+- [x] **`settle_adaptive` thermal noise** (`energy.py`): only plain `settle`
+      supported `temperature` (von-Mises-like phase noise); the adaptive-
+      step-size mechanism was deterministic-only. Added the identical noise
+      injection, gated so the plateau/convergence check tracks the
+      *pre-noise* improvement (noise perturbing energy every step would
+      otherwise make "3 consecutive tiny-improvement steps" nearly
+      impossible to ever trigger). `temperature=0.0` (default) is a
+      byte-for-byte no-op, checked directly.
+- [x] **`compile_theory_relaxed` + `lukasiewicz_energy_relaxed`**
+      (`grounding.py`): `compile_theory`'s own docstring already named the
+      fix - "a continuous-relaxation variant... once `energy.settle_grad`
+      lands" (it has) - since `2**n` exhaustive Boolean-corner enumeration
+      is infeasible past ~20-25 variables. Gradient-descends the theory's
+      energy directly over a continuous valuation from several random
+      restarts (multiple, because a nonconvex multi-rule energy can have
+      several satisfying corners, each its own local basin), snaps each
+      converged point to its nearest corner, and registers exactly what
+      `compile_theory` would - same Boltzmann weighting, same
+      `WEIGHT_FLOOR`, same hypervector encoding, so the resulting
+      `Landscape` is structurally interchangeable, just found by a
+      polynomial search instead of a combinatorial one. Scoped to
+      `logic="lukasiewicz"` (this project's default and only logic ever
+      used in its own theories) - `compiler.py`'s `clamp`/Gödel/product
+      implications use plain Python `min`/`max`/`if`, which abort a
+      `jax.grad` trace; `lukasiewicz_energy_relaxed` is a `jax.numpy.clip`-
+      based restatement, exactly the reason `settle_grad` restates
+      `Landscape.energy` instead of calling it - raises
+      `NotImplementedError` on any other logic rather than silently
+      mishandling it.
+      Real performance bug found and fixed before this was usable: a plain
+      Python loop of `restarts * steps` un-jitted `jax.grad` calls measured
+      at **100+ seconds for just 16 variables** - slower than exhaustive
+      enumeration, defeating the entire point. Rewritten with
+      `jax.vmap`+`jax.jit` over `jax.lax.fori_loop` (the same "compile once,
+      dispatch once" discipline `collapse.collapse_batch_jit` already
+      established elsewhere in this project) - **1.25s** at the same n=16
+      (now *faster* than exhaustive's 3.7s), and **2.4s at n=28** (268
+      million corners - not attempted exhaustively at all).
+      Measured directly, not assumed: matches exhaustive enumeration's exact
+      corner set on every existing `test_grounding.py` theory at a sharp
+      (high-`inverse_temperature`) setting. Honest, documented scope limit
+      found the same way: at *low* `inverse_temperature`, exhaustive
+      enumeration keeps every corner clearing `WEIGHT_FLOOR` (including
+      merely-mediocre, non-locally-optimal ones, since it scores literally
+      every corner), while gradient descent only ever finds actual local
+      minima - measured on this module's own test theory (4 corners survive
+      exhaustively at `inverse_temperature=0.1`; only 1, the true minimum,
+      via relaxation) and not fixable by more restarts, since a non-minimum
+      corner is not a gradient-descent fixed point from any start. Argued
+      (not just excused) to not cost much in practice: a diffuse prior over
+      thousands-to-millions of corners was never a usable `Landscape` at the
+      scale this function exists for anyway - the sharp, few-ground-states
+      regime is exactly where scaling past enumeration matters, and exactly
+      where this function already matches (and now beats) exhaustive
+      enumeration.
+- [x] **Rule discovery**: new module `tier3_logic/rule_discovery.py`
+      (`discover_antecedent`, `discover_rule`, `DiscoveredRule`,
+      `expand_valuation`, `compile_discovered_theory`) - the concrete answer
+      to "no mechanism anywhere lets a `Rule`'s structure be discovered
+      rather than hand-typed." A rule's antecedent is structurally identical
+      to what `tier4_synthesis.semantic_bias`'s boolean backpropagation
+      already discovers (v0.31 - 30/30 leap-year seeds): a compound boolean
+      formula over named variables matching given (valuation → outcome)
+      examples. `discover_antecedent` wraps `tier4_synthesis.search.
+      synthesize(allow_semantic_bias=True, allow_bool_template=False)`
+      directly - the general mechanism itself does the discovering, not a
+      hand-built template. Rather than complicate `Rule`'s deliberately
+      simple dict-key contract, a discovered antecedent is registered as a
+      synthetic named variable (`_discovered_<consequent>_antecedent`)
+      computed from the real variables via `dsl.evaluate`;
+      `expand_valuation` injects that computed value into a valuation dict
+      before it reaches the ordinary, unmodified `Theory.energy` -
+      `Rule`/`Theory` never need to know a rule's antecedent was discovered
+      rather than declared. `compile_discovered_theory` mirrors
+      `compile_theory`'s exact enumeration/weighting algorithm with that one
+      expansion step added, raising `ValueError` on any unverified
+      discovered rule rather than silently promoting a guess to an axiom.
+      Measured end to end, not just unit-tested in isolation: given four
+      examples generated from a hidden rule `wet <- rain or sprinkler`,
+      `discover_antecedent` finds the exact formula `(rain or sprinkler)`,
+      verified; compiling it into a `Landscape` at a sharp temperature keeps
+      *only* corners logically consistent with that implication (the two
+      violating corners - antecedent true, consequent false - correctly
+      excluded).
+- [x] New tests: `test_settle_adaptive_temperature_is_a_true_noop_by_default`/
+      `_explores_thermally` (`test_energy.py`);
+      `test_lukasiewicz_energy_relaxed_matches_theory_energy_formula`,
+      `test_compile_theory_relaxed_requires_jax_backend`/`_rejects_non_
+      lukasiewicz_rules`/`_matches_exhaustive_ground_state`/`_scales_past_
+      exhaustive_enumeration` (`test_grounding.py`); a new file
+      `test_rule_discovery.py` (7 tests - OR/AND formula recovery, synthetic
+      antecedent naming, `expand_valuation` correctness including a
+      fractional-valuation rounding case, corner-consistency of a compiled
+      discovered theory, and the unverified-rule rejection).
+      Environment note recorded for future sessions: the project's `.venv`
+      (`C:\program\.venv`) has JAX 0.10.2 installed and is required for
+      every JAX-gated test in this entry - the bare system Python on PATH
+      has no JAX at all (`HAS_JAX=False` there), a fact this session had to
+      rediscover after `docs/ARCHITECTURE.md`'s note about JAX being active
+      by default turned out to refer to a different environment than the
+      one commands were initially run in.
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
