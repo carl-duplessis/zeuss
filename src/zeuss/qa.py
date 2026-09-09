@@ -20,7 +20,7 @@ so a two-hop deduction is honestly reported as less certain than a one-hop one.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from .tier2_substrate.collapse import dimensional_collapse, softmax
@@ -267,10 +267,29 @@ def ask_sharded(
     relation: str,
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
+    shard_weights: list[float] | None = None,
 ) -> Answer:
     """`ask`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`) instead of one - queries every shard and
     keeps whichever `Answer` rings loudest (highest `coherence`).
+
+    ``shard_weights`` (v0.46, optional, positionally aligned with
+    ``memories``): a continuous per-shard trust score - see
+    `ontology.shard_trust_weights` - multiplied into `coherence` *before*
+    both the cross-shard argmax and the `known` floor check. This is
+    where continuous shard trust actually has to live: weighting a
+    shard's own triples uniformly before bundling (see
+    `Ontology.ground_trust_weighted_shards`) is a no-op for
+    `ask_sharded`'s purposes, since :func:`~zeuss.tier2_substrate.
+    hypervectors.bundle` renormalizes every element back onto the unit
+    circle regardless of a shared scalar weight - a low-trust shard's
+    *own* bundle looks identical whether weighted or not. What genuinely
+    changes outcomes is scaling *this* function's cross-shard comparison:
+    a noise shard that happens to resonate loudly with a probe by chance
+    is dampened below `COHERENCE_FLOOR` (or below a genuinely trustworthy
+    shard's honest signal) instead of winning the argmax outright.
+    ``None`` (default) is an exact no-op, equivalent to every weight being
+    ``1.0``.
 
     This is the real fix for `docs/ROADMAP.md` v0.39's measured ceiling: a
     single `ground()` bundle stays reliable to ~80 triples and collapses
@@ -281,18 +300,36 @@ def ask_sharded(
     proven to work at - measured, not assumed: 90% accuracy at 800 triples
     (10 shards of 80) versus 0% for one 800-triple bundle, with **zero**
     false positives on genuine unknown queries at every scale tested
-    (`test_capacity_ceiling.py`'s `test_sharding_*` tests) - the max-over-
-    shards selection does not measurably raise crosstalk above
-    `COHERENCE_FLOOR` even at 10 shards, because that floor already carries
-    a wide margin over single-shard noise (see `test_stored_and_guessed_
-    coherence_are_well_separated`).
+    when every shard carries real, structured data (`test_sharding.py`).
+
+    **v0.41 - safety is specific to real-data shards, not shard count in
+    general.** The zero-false-positives result above does not hold once
+    shards carry *unstructured* content: mixing in as few as 10 random-
+    noise shards alongside 5 real ones (still far fewer than the 85 shards
+    that stayed safe with all-real data) measurably breaks the guess-
+    detection guarantee (`test_sharding_is_fragile_to_unstructured_noise_
+    shards`). Checked directly, ruling out an obvious confound (noise
+    triples coincidentally reconstructing a valid answer by chance): the
+    same collapse happens even when noise fillers can never be a valid
+    answer to the query's relation. Don't treat "add more shards" as safe
+    in general - it's validated for shards that are genuine partitions of
+    real data, not for arbitrary or adversarial content.
     """
     if not memories:
         raise ValueError("ask_sharded requires at least one memory - see Ontology.ground_sharded")
+    if shard_weights is not None and len(shard_weights) != len(memories):
+        raise ValueError("shard_weights must be the same length as memories")
     best: Answer | None = None
-    for memory in memories:
+    best_score = -float("inf")
+    for i, memory in enumerate(memories):
         answer = ask(onto, memory, subject, relation, beta, axiom_bias)
-        if best is None or answer.coherence > best.coherence:
+        if shard_weights is None:
+            score = answer.coherence
+        else:
+            score = answer.coherence * shard_weights[i]
+            answer = replace(answer, coherence=score, known=score >= COHERENCE_FLOOR)
+        if score > best_score:
+            best_score = score
             best = answer
     return best
 
@@ -384,6 +421,10 @@ def chain_sharded(
     hasn't itself been measured beyond "it runs and stays honest" - treat
     `resonance_coherence` here as a smaller-scope extension, not a result
     carrying the same evidence `ask_sharded`'s per-hop selection does.
+
+    v0.41's caveat on `ask_sharded` applies here too, at every hop: this is
+    safe when every shard carries real, structured data, not when shards
+    may carry arbitrary/unstructured content.
     """
     if not memories:
         raise ValueError("chain_sharded requires at least one memory - see Ontology.ground_sharded")

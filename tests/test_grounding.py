@@ -175,6 +175,7 @@ def test_lukasiewicz_energy_relaxed_matches_theory_energy_formula():
     trace - pin down the restatement is numerically exact, not just "close
     enough", by comparing it directly against `Theory.energy` at several
     concrete (non-traced) valuations."""
+    pytest.importorskip("jax")
     theory = Theory(rules=[Rule("a", "b", weight=1.0), Rule("b", "a", weight=2.0)])
     for valuation in (
         {"a": 1.0, "b": 1.0},

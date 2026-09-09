@@ -139,6 +139,98 @@ and - the real risk with a max-over-N-shards selection - zero false
 positives on genuine unknown queries at either scale, so guess-detection
 isn't quietly traded away for the accuracy gain.
 
+**v0.41 found that guarantee is specific to shards carrying real data.**
+Stress-testing sharding itself (mixing in shards of unstructured random
+triples instead of more real ones) broke the zero-false-positive result
+fast: just 10 random-noise shards alongside 5 real ones pushed false
+positives from 0/10 to 4-6/10 - checked directly to rule out a coincidence-
+based confound. `ground_sharded`/`ask_sharded`/`chain_sharded` are
+validated for splitting a KB's own real data across shards, not for a
+setting where shard content might be noisy or adversarial.
+
+**v0.42/v0.43 answer "how do we tell the difference", the second version
+properly.** v0.42's `is_structurally_regular` (duplicate `(subject,
+relation)` detection) fixed the immediate problem but couldn't tell a
+genuine multi-valued relation (`has_friend`-like) from a contradiction, and
+dropped whole shards on one bad pair. v0.43's `resolve_shard_conflicts`
+fixes both: `classify_multi_valued_relations` infers which relations are
+legitimately multi-valued from the data itself, and every other fact is
+checked against a *cross-shard consensus* (the majority filler asserted
+for that pair across every shard) rather than the shard's own internal
+statistics - the mechanism that turned out to be the scale-invariant one,
+after two within-shard statistics (collision rate, then degree variance)
+were measured and rejected for degrading as vocabulary grows. Genuine ties
+are left unresolved, not silently guessed. Honest boundary: this needs
+garbage to be a minority of the data - measured robust through ~30%
+contamination, failing open at a 50/50 split (the same "need an honest
+majority" limit consensus systems generally have). `sheaf.py`'s
+philosophy (independent sources should agree) inspired this, but its own
+machinery (scalar `Theory` variables, not triples) wasn't reused directly.
+
+**v0.44 answers v0.43's own disclosed ceiling with a genuinely different
+kind of signal, not a bigger version of the same one.** No majority-vote
+scheme can be made reliable against an adversarial *majority* of bad data
+- `axiom_violations` sidesteps that wall instead of trying to push past it:
+a fact that's structurally impossible given another fact the same subject
+holds gets discarded *before* `_global_filler_consensus` even tallies a
+vote, so a garbage majority can't out-vote a true minority fact on a pair
+a trusted `DiscoveredExclusion` axiom covers. This is only as trustworthy
+as the exclusions it's given - mining them from the same contaminated pool
+just re-derives the vote-counting problem one level up; the real power
+comes from sourcing them independently (hand-written, or from a separately
+trusted seed sample). A second, distinct limit was found only by measuring
+the full pipeline at v0.43's own garbage-majority boundary: once a relation
+is already exempted from consensus entirely (v0.43's fail-open case),
+hundreds of unrelated noise triples flood in unfiltered too, and most wrong
+answers are hypervector crosstalk from that flood, not the one literal
+contradiction `axiom_violations` actually excises - a problem this
+mechanism was never designed to solve. (Confirming v0.43's own test suite
+for the first time, while building this, also surfaced two real bugs in
+it - a missing subject-count floor on `classify_multi_valued_relations`,
+and a shard-dropping branch that broke positional list alignment - both
+fixed alongside two test assertions that had been written before ever
+being run.)
+
+**v0.45 builds the genuine constraint *network* v0.44 was asked for next:
+chaining mined implications, not just checking exclusions pairwise.**
+`_implied_closure` forward-chains a subject's held facts through a directed
+graph of mined `DiscoveredImplication` edges before `axiom_violations`
+checks exclusions against the result - catching a violation that's only
+reachable by composing two or more separately-mined rules, invisible to
+v0.44's flat one-hop check (verified: a mined two-hop chain plus an
+exclusion catches a contradiction the flat check misses on the identical
+triples). Deliberately not built on `sheaf.py`'s H0/H1 cohomology again,
+for the same reason as before: its restriction edges assert equality
+between scalar stalks, and neither implication (directional) nor exclusion
+("not both") is an equality constraint - forward-chaining graph reachability
+is the correctly-scoped tool for directed rules, not a relabelling of
+cohomology.
+
+**v0.46 answers v0.44's second disclosed limitation (crosstalk) - after
+trying the more elegant fix first and measuring it fail.** The natural
+"dissolve the gate" idea - turn `classify_multi_valued_relations` into a
+continuous per-shard trust weight instead of a hard exemption
+(`shard_trust_weights`) - was implemented and measured directly on the
+scenario that motivated it: every shard, real and noise alike, scored
+identically. Root cause: at heavy contamination with a small shared entity
+pool, most real-vs-noise collisions land as an exact tie, which is
+deliberately treated as neutral so genuine multi-valued plurality isn't
+punished - making a real+noise tie and two genuine facts indistinguishable
+from one pair's vote count alone. The fix that actually works
+(`internal_collision_energy`/`shard_regularity_weights`) sidesteps the
+ambiguity instead of resolving it: a signal purely internal to one shard
+(does it duplicate one of its own `(subject, relation)` pairs?), immune to
+both contamination volume and cross-shard tie ambiguity because it never
+looks past one shard's own boundary. Also discovered by direct
+measurement: the weight can't live inside `bundle()` at all (uniform
+per-shard weighting is a provable no-op after `normalize`'s per-element
+phase projection) - it has to scale `qa.ask_sharded`'s cross-shard
+comparison instead (`shard_weights`), damping a noise shard's occasional
+lucky resonance at retrieval time. Measured result: 0/10 false positives
+(from 2/10) and accuracy matching the noise-free baseline exactly, holding
+from 50% contamination through 94% - a qualitatively higher ceiling than
+v0.43's consensus mechanism, which failed open already at 50%.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional

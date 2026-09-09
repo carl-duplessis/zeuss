@@ -2275,6 +2275,386 @@
       to break down (at what shard count does max-of-N noise finally cross
       `COHERENCE_FLOOR`?) is not yet known.
 
+## v0.41 — stress-testing sharding finds where it actually breaks
+
+- [x] Direct follow-up to the user's own question after v0.40: "is the
+      ceiling really gone, or just moved?" and the natural next request -
+      stress-test sharding itself rather than assume v0.40's 5-10-shard
+      numbers extrapolate cleanly. Two different stress axes were tried.
+- [x] **Axis 1 (scaling real data, more shards, no garbage): holds up.**
+      Re-confirmed v0.40's own claim rather than re-deriving it - no new
+      finding here, just re-checked before trusting the second axis's
+      contrast was meaningful.
+- [x] **Axis 2 (adding shards that carry unstructured/random content
+      instead of real data): breaks fast, and this is the real finding.**
+      Starting from the same 5 real 80-triple shards, adding just 10 extra
+      shards of *random* `(entity, relation, entity)` nonsense - reusing
+      existing vocabulary so the entity codebook, and thus v0.39's
+      unrelated ceiling, never enters into it - collapsed the guess-
+      detection guarantee: false positives on genuine unknown queries
+      jumped from 0/10 to 4-6/10, and correct-and-known accuracy on real
+      facts fell from 9/10 to 2-3/10, worsening further by 40 noise shards
+      (0/10 correct, 10/10 false positives). A finer sweep (1/2/3/5 noise
+      shards) showed this isn't a cliff - false positives start appearing
+      almost immediately (1 noise shard: 0/10; 2: 1/10; 5: 2/10) and climb
+      from there, not a safe-then-catastrophic threshold.
+- [x] **Ruled out the obvious confound before trusting this.** The noise
+      generator drew fillers from the whole entity vocabulary, which
+      includes the 4 small "category" symbols (`human`/`star`/`earth`/
+      `galaxy`) every real answer must land on - so some random noise
+      could coincidentally reconstruct a plausible-looking answer purely
+      by chance. Re-ran with noise fillers restricted to *never* include
+      those 4 symbols (structurally guaranteeing no noise triple can look
+      like a valid answer) and got the same collapse, if anything slightly
+      worse (6/10 false positives at 10 noise shards, vs. 4/10 before) -
+      so this is not a lucky-coincidence artifact of the test's own
+      vocabulary choice.
+- [x] **What this actually means, stated carefully:** v0.40's zero-false-
+      positive result was real and reproduced, but it was specific to
+      shards that are genuine partitions of real, structured data (every
+      shard, even ones irrelevant to a given query, still encodes coherent
+      real facts using the ontology's normal relation/filler structure).
+      It does not generalize to "shard count is safe in general" - shards
+      carrying unstructured or adversarial content break the guarantee far
+      sooner than growing real data across more real shards does. The
+      *precise* mechanism (why random content is measurably more
+      disruptive than real-but-irrelevant content of the same size) was
+      not tracked down here - that would mean examining `bind`/`bundle`/
+      `unbind` behavior under adversarial random input directly, a further,
+      separate investigation, not assumed to have an easy answer.
+- [x] `qa.ask_sharded`/`qa.chain_sharded` docstrings updated with this
+      caveat directly rather than left overclaiming the earlier all-real-
+      data result as general safety. New test `test_sharding_is_fragile_to_
+      unstructured_noise_shards` (`test_sharding.py`, now 9 tests) locks in
+      the measured collapse alongside the original all-real-shards
+      guarantee, so both the "safe" and "not safe" regimes are checked, not
+      just narrated.
+- [x] **Practical guidance going forward:** `ground_sharded`/`ask_sharded`/
+      `chain_sharded` are validated for splitting a KB's own real data
+      across shards, not for a setting where shard content might be noisy,
+      adversarial, or unrelated to the domain - that would need its own
+      investigation (e.g. a per-shard sanity/quality gate) before being
+      trusted the way v0.40's core claim now is.
+
+## v0.42 — a first quality gate, quickly superseded by v0.43
+
+- [x] Answered v0.41's own question ("how do we tell garbage from real
+      data") with the cheapest thing that could work: `is_structurally_
+      regular(triples)` checks whether the same `(subject, relation)` pair
+      repeats within a shard - not semantic truthfulness. Real `Ontology`
+      data never repeats a pair; random noise sampled with replacement
+      almost always does. `Ontology.ground_shards(shards, skip_irregular=
+      True)` filters candidate shards by this before grounding. Verified:
+      on the exact adversarial mix that broke v0.40 (5 real + 10 noise
+      shards), filtering restores 0/10 false positives exactly.
+- [x] **Two real limitations found immediately by the user, before this
+      was trusted as final:** (1) a genuinely multi-valued relation
+      (`has_friend`-like: many subjects legitimately have more than one
+      filler) looks identical to a contradiction under this check - it
+      would be wrongly dropped. (2) dropping the *entire* shard on one bad
+      pair discards every other good fact in it. Both are addressed in
+      v0.43, not left as a shipped limitation - `is_structurally_regular`/
+      `ground_shards` remain in the codebase as the simpler, still-correct
+      (for its narrower claim) path, now documented as superseded.
+
+## v0.43 — intelligent conflict resolution: keep the good, drop only the bad
+
+- [x] Direct response to the user's explicit ask: don't drop true multi-
+      valued facts, discard only actual garbage, resolve conflicts
+      intelligently rather than bluntly. Also asked directly: why not use
+      `tier3_logic/sheaf.py`, which already does exactly this kind of
+      "do independent sources agree" checking? Answered honestly: `sheaf.
+      py` operates on `Theory`'s scalar `[0,1]` variables and named agents
+      via linear algebra over equality constraints - a genuinely different
+      data model than `Ontology`'s `(subject, relation, object)` triples.
+      Using it here would mean porting its machinery, not reusing it - so
+      this entry builds the same *philosophy* (check whether independent
+      claims agree, don't just count duplicates) natively for triples,
+      rather than forcing a scalar-algebra tool onto categorical data it
+      wasn't built for.
+- [x] **`classify_multi_valued_relations(triples, threshold=0.2)`**: which
+      relations are legitimately multi-valued, inferred from the data
+      itself (>=20% of a relation's subjects genuinely having more than
+      one filler) - the same "let structure emerge from data" principle
+      `rule_discovery.py`/`axiom_mining.py` already apply elsewhere, now
+      applied to schema inference. Verified: correctly classifies a
+      `has_friend`-style relation as multi-valued and `is_a` as not, from
+      triples alone, no schema declared - and `resolve_shard_conflicts`
+      preserves every one of the multi-valued relation's facts with zero
+      data loss.
+- [x] **Two within-shard statistics tried and rejected first, by direct
+      measurement, not intuition:** (1) collision *rate* within a shard -
+      measured across three vocabulary sizes and found NOT scale-
+      invariant: real data with just 2 genuine contradictions (rate 0.026)
+      fell inside pure garbage's own rate range (0.013-0.097) at one
+      scale, so no fixed threshold works. (2) subject-degree variance/Fano
+      factor (an attempt at a more powerful, scale-invariant version of
+      the same idea) - also measured to drift toward 0 (indistinguishable
+      from real data) as vocabulary grew (0.22 -> 0.08 -> 0.02 across
+      three scales), because a single 80-triple sample from a huge space
+      rarely collides with itself regardless of how it was built - a
+      genuine statistical-power problem, not a threshold-tuning problem.
+      This was caught by testing at a *different* scale than the one that
+      motivated the original fix, not by assuming the first result
+      generalized.
+- [x] **The mechanism that actually works, and is scale-invariant: cross-
+      shard consensus, not within-shard statistics.** `_global_filler_
+      consensus` computes, for every `(subject, relation)` pair, the
+      majority filler asserted across *every* shard combined. A shard's
+      claim is judged against this consensus, not against its own
+      internal structure - and a genuinely random filler drawn from a
+      large vocabulary almost never matches the truth by chance, so this
+      signal's power comes from the size of the answer space, not from
+      the shard's own size. Measured directly at 100/400/1000-subjects-
+      per-class scale: real-shard disagreement with the consensus stayed
+      at 0.000 and garbage-shard disagreement stayed at 0.6-0.75 at *every*
+      scale tested - the stable separation neither prior statistic had.
+- [x] **Genuine ties are left unresolved, not silently guessed.** A true
+      1-vs-1 split (e.g. two shards independently asserting `socrates
+      is_a human` and `socrates is_a star`) has no principled winner.
+      `_global_filler_consensus` returns `None` for an exact tie rather
+      than trusting `Counter.most_common()`'s insertion-order tie-break
+      (checked directly: confirmed this is a real, order-dependent
+      behavior, not a safe default) - both sides are excised, leaving the
+      fact honestly absent instead of confidently wrong either way. A
+      third, corroborating vote correctly breaks a would-be tie with a
+      real majority.
+- [x] **`resolve_shard_conflicts`/`Ontology.ground_resolved_shards`**: the
+      complete pipeline - classify multi-valued relations, compute cross-
+      shard consensus, excise only the specific facts that disagree with
+      it (keeping every other fact in the same shard untouched), and drop
+      a whole shard only when *most* of its content disagrees with the
+      rest of the dataset. Verified on the real API: the exact v0.41
+      failure case (20 real shards + 2 noise shards) is fully restored -
+      both noise shards dropped, 0 false positives, accuracy matching the
+      all-real-shards baseline; a single injected contradiction in an
+      80-triple shard is surgically excised while the other 78 facts in
+      that same shard survive untouched.
+- [x] **The honest boundary, measured precisely rather than left vague:**
+      this assumes garbage is a *minority* of the data - the same "need an
+      honest majority" requirement consensus/robust-statistics approaches
+      generally have (not a defect unique to this design). Measured the
+      exact degradation curve on one ontology: correct and error-free
+      through 17% and 29% contamination, degrading progressively at 38%
+      (1/10 false positives) and 44% (2/10), failing open at a 50/50 split
+      (2/10, confirmed by this file's own formal test - not 4/10 as
+      originally estimated before that test was actually run) - because at
+      that point the garbage's own randomness corrupts
+      `classify_multi_valued_relations` itself (every relation starts
+      looking falsely multi-valued), which exempts everything from the
+      disagreement check entirely. Locked into `test_shard_conflict_
+      resolution.py`'s own dedicated test for this failure mode, not
+      swept under the rug.
+- [x] New test file `test_shard_conflict_resolution.py` (9 tests): the
+      classifier, zero-loss multi-valued preservation, surgical single-
+      contradiction excision, tie-handling (both the unresolved case and
+      the tie broken by a third vote), the full real-API restoration of
+      v0.41's failure case, the moderate-contamination robustness check,
+      and the disclosed garbage-majority failure mode.
+
+## v0.44 — logical-axiom-violation checking: a different kind of signal than a vote
+
+- [x] Direct response to v0.43's own disclosed ceiling: no majority-vote/
+      consensus scheme can ever be made reliable against an adversarial
+      *majority* of bad data - the same wall Byzantine fault tolerance and
+      robust statistics hit generally (median-based estimators tolerate up
+      to ~50% contamination, never more, because past that point "the
+      majority" and "the truth" are definitionally not the same thing).
+      Also asked directly: why not reuse `sheaf.py`'s existing "do
+      independent sources agree" machinery here too? Answered: its H0/H1
+      cohomology is equality-restriction linear algebra over scalar
+      stalks - the right tool for "do two agents' conclusions agree" (see
+      `grounding.compile_theories`), but logical necessity (a fact being
+      *structurally impossible* given another fact, independent of any
+      vote) is a genuinely different kind of signal, not a bigger version
+      of consensus voting, so it's built natively rather than forced
+      through a mismatched tool.
+- [x] **`axiom_violations(triples, exclusions)`**: which triples
+      structurally violate a trusted, `DiscoveredExclusion`-shaped mined
+      axiom (duck-typed, no import cycle with `axiom_mining.py`) given
+      what else the *same subject* holds. Wired into
+      `_global_filler_consensus` so a violating vote is discarded *before*
+      a majority is tallied, not merely overridden after - a structurally-
+      impossible fact can't win a vote just because garbage shards
+      outnumber real ones. `resolve_shard_conflicts`/`Ontology.
+      ground_resolved_shards` both gained an `exclusions` parameter
+      (default `None` = exact no-op, fully backward compatible).
+      Verified directly: a fact a 2-vs-1 garbage majority would otherwise
+      out-vote is recovered once a trusted exclusion disqualifies the
+      garbage votes from the tally entirely.
+- [x] **Honest limit, stated up front and checked, not assumed:** this is
+      only as trustworthy as the `exclusions` it's given. Mining them from
+      the *same* contaminated pool being checked just re-derives the same
+      vote-counting problem one level up (checked directly: exclusions
+      self-mined from a 50/50-contaminated sample differ from the same
+      mining run on a clean seed sample). The real power comes from
+      sourcing `exclusions` independently - hand-written `Rule`s (v0.37)
+      or a separately-trusted seed sample - not from the shards under
+      suspicion.
+- [x] **Second honest limit, found only by actually measuring the full
+      real-API pipeline at the v0.43 garbage-majority boundary, not
+      assumed to follow from the first:** `axiom_violations` only excises
+      literal violating *triples*. Once a relation has already been
+      exempted from `_global_filler_consensus` entirely (i.e.
+      `classify_multi_valued_relations` misclassifies it as multi-valued
+      under heavy contamination, v0.43's own disclosed failure mode),
+      *every* triple under that relation - including hundreds of unrelated
+      noise ones - gets bundled into the grounded memory unfiltered, and
+      most of the resulting wrong answers turn out to be hypervector
+      crosstalk from that flood, not any single literal contradiction.
+      Excising the one specific violating fact this mechanism finds is
+      real (measured: present in the unfiltered baseline, absent once
+      exclusions are applied) but does not by itself restore downstream
+      query accuracy at that contamination level - a different problem
+      exclusions were never designed to solve.
+- [x] **Two real bugs found and fixed in v0.43's own code while finally
+      running its test suite to completion** (it had been left uncommitted
+      with that confirmation still pending - see this file's resume
+      notes): (1) `classify_multi_valued_relations` had no floor on
+      subject count, so a relation with very few subjects could be
+      auto-classified multi-valued off a single genuine contradiction
+      (e.g. a true 1-vs-1 cross-shard tie) instead of being flagged as
+      one - fixed with a `min_subjects` floor (default 5). (2)
+      `resolve_shard_conflicts`'s whole-shard-drop branch used `continue`,
+      which *omitted* the shard from the output list entirely instead of
+      keeping its (now-empty) slot - broke positional alignment with the
+      input list that several of its own tests (and callers) rely on -
+      fixed to append `[]` instead. Both were caught by actually running
+      the test suite, not by inspection.
+- [x] **Two of v0.43's own test assertions were hardcoded numbers that had
+      never actually been confirmed** (the background pytest run checking
+      them was still pending when that work was left uncommitted): re-
+      measured for real, deterministically, at 7/10 (not 8/10) and 2/10
+      (not 3/10) respectively - both fixed to the true measured values,
+      and this file's own "50/50 split" figure corrected from 4/10 to 2/10
+      to match (the 38%/44% figures next to it were independently
+      re-verified and were already correct).
+- [x] New test file `test_axiom_violation_resolution.py` (5 tests): the
+      direct unit check, the garbage-majority-outvote recovery
+      demonstration, the "exclusions mined from the same contaminated pool
+      inherit the same limit" honesty check, and the literal-violation-vs-
+      crosstalk distinction at the v0.43 boundary.
+
+## v0.45 — a genuine constraint network: chaining mined implications before checking exclusions
+
+- [x] Direct follow-up ask: "build a genuine constraint network from the
+      mined axioms (transitivity chains, exclusivity webs) and check
+      global consistency across that network" - v0.44's `axiom_violations`
+      only caught a violation when the exclusion's antecedent was one of
+      the subject's own *directly-asserted* facts; a subject who only
+      reaches that antecedent by composing two or more separately-mined
+      `DiscoveredImplication` rules was invisible to it.
+- [x] **`_implied_closure`**: plain forward-chaining BFS reachability over
+      a directed graph built from mined implication edges - the standard
+      tool for propagating directed Horn-clause-like rules, not a bespoke
+      invention. `axiom_violations` gained an `implications` parameter
+      (default `None`): when given, a subject's held facts are chained
+      through the implication graph *before* checking exclusions, so a
+      violation is caught even several mined rules away. `implications`
+      threaded through `resolve_shard_conflicts`/`ground_resolved_shards`
+      too. `None` (default) is an exact no-op - `_implied_closure` returns
+      the held facts unchanged with no graph, reproducing v0.44's
+      behaviour precisely.
+- [x] **Deliberately not built by reusing `sheaf.py`'s H0/H1 cohomology
+      machinery, for the same reason v0.44 didn't either:** its
+      restriction edges assert equality (`restrict_u * x_u == restrict_v *
+      x_v`) between two scalar stalks - implication is directional (A
+      implies B does not mean A equals B) and exclusion means "not both",
+      neither of which is an equality constraint. Forcing them through
+      that linear algebra would misrepresent the semantics rather than
+      reuse them; transitive-closure graph search is the correctly-scoped
+      tool for this instead.
+- [x] Verified end to end, not just as a hand-authored toy: a two-hop
+      chain (`born_on=mars -> is_a=martian -> breathes=co2`, then
+      `breathes=co2 excludes needs=oxygen`) is mined for real via
+      `axiom_mining.discover_implications` from an ontology's own data at
+      full confidence, and `axiom_violations` correctly chains through it
+      to catch a subject holding `born_on=mars` and `needs=oxygen` -
+      genuinely contradictory once composed, invisible to the flat v0.44
+      check (checked directly: the flat check finds nothing on the exact
+      same triples).
+- [x] New test file `test_axiom_constraint_network.py` (6 tests): the flat-
+      check-misses/chained-check-catches pair, a subject missing a link in
+      the chain correctly not flagged, the `implications=None` backward-
+      compatibility no-op, the full `resolve_shard_conflicts` integration,
+      and the real-mining-API end-to-end case.
+
+## v0.46 — fixing the crosstalk limitation: three proposals, one worked
+
+- [x] Direct follow-up to v0.44's own disclosed second limitation
+      (excising a literal violating fact doesn't fix downstream accuracy
+      once a relation is already exempted from consensus - most wrong
+      answers there are hypervector crosstalk from a flood of *other*,
+      unrelated noise triples, not the one fact excised). Asked for three
+      candidate fixes, one abstract, then told to implement the abstract
+      one first and fall back to the other two (combined) if it didn't
+      work. It didn't - both outcomes are recorded below, not just the
+      one that worked.
+- [x] **First attempt (rejected, kept as a documented negative result,
+      not deleted): dissolve `classify_multi_valued_relations`'s hard
+      gate into one continuous per-shard trust weight.**
+      `shard_disagreement_energy`/`shard_trust_weights` compute cross-
+      shard vote disagreement with `multi_valued_relations` never
+      populated at all (no relation ever exempted), turning it into a
+      Boltzmann weight instead of a hard threshold. Measured directly on
+      the exact 50/50 real/garbage-shard scenario that motivated this:
+      every shard, real and noise alike, came back with disagreement
+      energy `0.0` and therefore weight `1.0` - zero discrimination, not
+      weak discrimination. Root cause, found by direct measurement, not
+      assumed: a tie (`consensus[pair] = None`) is deliberately treated
+      as neutral so genuine multi-valued plurality (`has_friend`-like)
+      isn't punished - but with a small shared entity pool at this
+      contamination level, *most* real-vs-noise collisions on a given
+      pair land as an exact 1-vs-1 tie too, structurally indistinguishable
+      from genuine plurality using only that one pair's vote count. A
+      real, informative result about the limits of per-pair vote
+      statistics, not a bug to patch further.
+- [x] **Working fix ("option 1 + 2 combined"): a signal that never looks
+      past one shard's own boundary, applied at retrieval time, not
+      grounding time.** `internal_collision_energy` - the continuous
+      generalisation of v0.41/v0.42's `is_structurally_regular` - counts
+      how often a single shard asserts the same `(subject, relation)` pair
+      *more than once within itself*, immune to both failure modes found
+      so far because it never touches cross-shard votes or contamination
+      volume at all (option 1: bootstrap trust from something contamination
+      can't reach). `shard_regularity_weights` turns this into a Boltzmann
+      weight (`exp(-inverse_temperature * energy)`,
+      `inverse_temperature=60.0` chosen by direct measurement - tested 5
+      to 100, false-positive result identical across the whole range).
+      Discovered along the way, also by direct measurement, not assumed:
+      weighting a shard's own triples uniformly *inside* its bundle is a
+      provable no-op (`bundle`/`normalize` projects every element back
+      onto the unit circle regardless of a shared scalar weight) - the
+      weight has to live in `qa.ask_sharded`'s new `shard_weights`
+      parameter instead (option 2: damp a noise shard's occasional lucky
+      resonance at retrieval time), which scales `coherence` before both
+      the cross-shard argmax and the `known` floor check.
+- [x] **Measured result, not a marginal improvement:** on the exact 50/50
+      scenario that failed open at 2/10 false positives, the fix restores
+      0/10 - and restores answer accuracy to exactly the noise-free
+      baseline (9/10, not a strawman 10/10 - one entity is a naturally
+      harder resonance case at this scale regardless of noise), not just
+      "better than before." Pushed further: checked (not assumed) to hold
+      at 62%, 71%, 76%, 86%, 91%, 94%, and 96% contamination, every point
+      giving the identical 0/10 false positives and noise-free-matching
+      accuracy - a qualitatively higher honest ceiling than v0.43's
+      consensus mechanism, which failed open already at 50%. This does not
+      claim there is no ceiling at all, only that none was found in the
+      range actually tested.
+- [x] `Ontology.ground_shards_with_trust`/`ground_shards_with_regularity_
+      trust`: paired grounding-plus-weights helpers (the first for the
+      rejected signal, the second for the working one) sharing one private
+      grounding helper - both excise literal `axiom_violations` outright
+      (still a real, independent, crisp signal, kept regardless of which
+      continuous weighting is used) and return `(memories, weights)` for
+      `ask_sharded`'s `shard_weights`.
+- [x] New test file `test_shard_trust_weighting.py` (8 tests): the
+      collision-energy unit checks, the first attempt's documented
+      failure to discriminate at 50/50, the working signal's
+      discrimination check, the full real-API false-positive fix, the
+      noise-free-accuracy-parity check, and the 94%-contamination ceiling
+      check.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
