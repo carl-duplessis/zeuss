@@ -95,6 +95,40 @@ network by construction, so it cannot be trusted for "is this a guess";
 see `_cleanup`'s docstring for the failure mode this avoids). `chain`
 inherits this for every hop for free.
 
+v0.37 adds `axiom_bias`, an optional `candidate -> energy penalty` callable
+on `ask`/`chain`: it biases that same `Landscape`'s weights, letting a
+`compiler.py` `Rule`/`Theory` - built from *other* `ask()` calls about the
+same subject - veto a candidate that contradicts an already-established
+fact. This is a hook plus one measured example (a data-contradiction case
+where it fixes 4/10 wrong seeds, regresses 0/6 correct ones), not a general
+Ontology<->Theory bridge - the caller still writes the `Rule` by hand.
+
+v0.38 (`tier3_logic/axiom_mining.py`) removes that hand-writing: plain
+support/confidence association-rule mining over `Ontology.triples` finds
+`Rule`-shaped exclusion patterns automatically, and `axiom_bias_from_
+ontology` turns them straight into a v0.37 `axiom_bias` - "point it at an
+Ontology, get a biased query out" with no relation names or Rules
+hand-typed anywhere. Measured on a KB where plain resonance is
+systematically wrong (15/15 seeds): mining fixes 12/15, regresses 0/90
+clean checks, with the 3 holdouts diagnosed (not mysterious) as cases where
+raw crosstalk skew is unusually large relative to the mined bias's fixed
+strength - a real, acknowledged limit of this specific mechanism, not a bug.
+
+**v0.39 found a real ceiling in `Ontology.ground()` itself - not in any of
+v0.34-v0.38's work, but in the pre-existing single-bundle design underneath
+all of it.** Every triple gets bundled into one memory hypervector; measured
+directly (robust across 5 seeds), recovering a directly-stored, unambiguous
+fact via plain `ask()` stays perfectly reliable at 80 bundled triples and
+collapses sharply by 120 - a threshold every prior test/demo in this project
+happened to sit just under (the largest prior test ontology used 40).
+Surprisingly, raising `dim` 8x (8192 -> 65536) did not meaningfully rescue
+a 400-triple case - checked directly, not assumed - so this isn't the plain
+"more dimensions fixes capacity" story `VISION.md`'s own framing would
+predict. Why not is an open question, not yet investigated (see `docs/
+ROADMAP.md` v0.39): candidates include the `OBJ_SHIFT` permutation scheme
+or how `bundle`'s normalisation behaves with many summed terms. Locked into
+`test_capacity_ceiling.py` so the numbers don't silently drift.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional

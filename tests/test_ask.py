@@ -130,3 +130,63 @@ def test_energy_settling_does_not_inflate_guessed_coherence():
     assert not answer.known
     assert answer.coherence < COHERENCE_FLOOR
     assert answer.coherence < 0.1  # nowhere near settle()'s self-reinforced ~1.0
+
+
+def test_axiom_bias_resolves_a_genuine_data_contradiction():
+    """v0.37: closes v0.36's own documented remaining gap - Frontier 2's
+    Theory/Rule formalism (compiler.py) had no bridge to Ontology's
+    relational facts. ``axiom_bias`` (see _cleanup's docstring) is that
+    bridge: an optional candidate -> energy-penalty callable, applied to the
+    Landscape _cleanup already settles against.
+
+    The scenario this is measured on, not a contrived toy: a KB with a
+    genuine data contradiction - 'socrates is_a' both 'human' and 'star' -
+    so plain resonance is close to a coin flip and seed-dependent (checked
+    directly: 4 of 10 seeds wrongly pick 'star'). A Rule("walks_on_earth",
+    "not_star") - its antecedent filled in from a *separate* ask() about
+    'socrates walks_on earth', which is unambiguous - correctly vetoes
+    'star' as an is_a candidate whenever that separate fact holds, fixing
+    every one of the 4 wrong seeds and regressing none of the other 6."""
+    from zeuss.tier3_logic.compiler import Rule
+
+    wrong_before, wrong_after = [], []
+    for seed in range(10):
+        onto = Ontology(dim=2048, seed=seed)
+        onto.add("socrates", "is_a", "star")
+        onto.add("socrates", "is_a", "human")  # the contradiction
+        onto.add("plato", "is_a", "human")
+        onto.add("sirius", "is_a", "star")
+        onto.add("socrates", "walks_on", "earth")
+        onto.add("sirius", "orbits", "galaxy")
+        memory = onto.ground()
+
+        baseline = ask(onto, memory, "socrates", "is_a").answer
+        if baseline != "human":
+            wrong_before.append(seed)
+
+        walk_answer = ask(onto, memory, "socrates", "walks_on")
+        p_walk = walk_answer.confidence if walk_answer.answer == "earth" else 0.0
+        rule = Rule(antecedent="walks_on_earth", consequent="not_star", weight=2.0)
+
+        def axiom_bias(candidate: str, p_walk=p_walk, rule=rule) -> float:
+            not_star = 0.0 if candidate == "star" else 1.0
+            return rule.penalty({"walks_on_earth": p_walk, "not_star": not_star})
+
+        corrected = ask(onto, memory, "socrates", "is_a", axiom_bias=axiom_bias).answer
+        if corrected != "human":
+            wrong_after.append(seed)
+
+    assert len(wrong_before) == 4
+    assert wrong_after == []
+
+
+def test_axiom_bias_none_is_a_true_noop():
+    """The default must reproduce every existing case exactly - axiom_bias
+    is additive, not a behavior change for callers who don't pass it."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    for subject, relation in [("socrates", "is_a"), ("sky", "has_color"), ("dragon", "is_a")]:
+        with_none = ask(onto, memory, subject, relation, axiom_bias=None)
+        without_arg = ask(onto, memory, subject, relation)
+        assert with_none.answer == without_arg.answer
+        assert with_none.coherence == without_arg.coherence

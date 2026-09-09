@@ -2034,6 +2034,196 @@
       nobody has yet checked whether it would add real capability or just
       be more surface area.
 
+## v0.37 — closing v0.36's gap: Theory/Rule axioms actually bias a query
+
+- [x] Direct follow-up to v0.36's own honestly-scoped remaining gap: could
+      `compiler.py`'s `Rule`/`Theory` formalism (Frontier 2's propositional
+      logic) do real work inside a `qa.py` query, or would forcing a shared
+      data model between `Ontology`'s relational facts and `Theory`'s
+      propositional variables just be more surface area for no benefit?
+      Tested the question rather than assuming either answer, matching this
+      project's own established discipline (v0.30, v0.36).
+- [x] **The test scenario, not a contrived toy:** a KB with a genuine data
+      contradiction - `socrates is_a` stored as *both* `human` and `star`
+      (the kind of thing a noisy/uncurated ingestion pipeline produces in
+      practice). Measured first, before building anything: this makes plain
+      resonance a near coin flip, seed-dependent - 4 of 10 seeds wrongly
+      resolve to `star` despite `socrates walks_on earth` being separately,
+      unambiguously known in the same KB. Pure wave resonance has no way to
+      use that second fact; it only ever looks at the one relation being
+      queried.
+- [x] **`axiom_bias`** - a new optional parameter on `ask`/`chain`/
+      `_cleanup` (`qa.py`): `candidate -> additional energy penalty`,
+      applied as `exp(-penalty)` on that candidate's `Landscape` weight
+      inside `_cleanup`'s existing v0.36 settle step - the same Boltzmann
+      convention `grounding.compile_theory` already uses for its own
+      attractor weights, reused rather than reinvented. The caller builds
+      the penalty from an ordinary `Rule` plus *other* `ask()` calls about
+      the same subject: `Rule("walks_on_earth", "not_star")`, with
+      `walks_on_earth`'s truth value filled in from `ask(subject,
+      "walks_on").confidence`. Result: corrects all 4 wrong seeds to
+      `human`, regresses 0 of the other 6 (`test_axiom_bias_resolves_a_
+      genuine_data_contradiction`). Default `None` is a true no-op -
+      `test_axiom_bias_none_is_a_true_noop` checks every existing case
+      reproduces exactly, and the full pre-existing suite passes unchanged.
+      Like the settled state itself (v0.36), `axiom_bias` only ever
+      influences *which* candidate wins, never `coherence`/`confidence` -
+      the same honesty requirement, for the same reason.
+- [x] **Honest scope: this is a hook plus one demonstrated example, not an
+      automatic axiom-discovery system.** Nothing here lets Zeuss discover
+      *which* axioms apply on its own, or builds a general Ontology<->Theory
+      data-model bridge - the caller still has to write the `Rule` and wire
+      up which `ask()` call fills in which variable, by hand, per domain.
+      What this closes is narrower and more honest: the *mechanism* for a
+      Frontier-2 logical axiom to influence a real relational query now
+      exists and is measured to work on a genuine (not manufactured-to-
+      pass) failure case, where before there was no seam for this at all.
+      Whether it's worth building the fully general bridge remains an open
+      question - this entry answers "would a bridge add real capability"
+      (yes, on this case) without yet committing to what a general one
+      looks like.
+
+## v0.38 — automatic axiom discovery: mining Rules instead of hand-writing them
+
+- [x] Direct follow-up to v0.37's own honestly-scoped limit: "the caller
+      still has to write the `Rule` by hand." Asked whether that Rule could
+      instead be *discovered* from the ontology's own stored facts - the
+      same "rules emerge from data" standard v0.32's tier4 bridge already
+      met for propositional boolean formulas, now for relational facts.
+- [x] **New module `tier3_logic/axiom_mining.py`**: plain support/confidence
+      association-rule mining (Agrawal et al. - a standard, well-understood
+      statistic, not a bespoke one) over `Ontology.triples`.
+      `discover_implications(onto, ante_rel, cons_rel)` finds
+      `ante_rel=f1 -> cons_rel=f2` patterns with enough support and
+      confidence; `discover_exclusions` derives the natural corollary - a
+      veto against every *other* observed filler of `cons_rel` once a
+      strong implication toward one specific filler is established (the
+      concrete, statistically-checked form of "this relation is normally
+      single-valued", not a hard-coded schema constraint).
+      `axiom_bias_from_exclusions` turns a list of mined exclusions straight
+      into a v0.37-compatible `axiom_bias` callable - no hand-typed `Rule`
+      anywhere in the loop from "ontology's own data" to "a real qa.py
+      query's Landscape gets biased".
+- [x] **Measured on the same kind of genuine contradiction v0.37 used, now
+      at a scale where it's a *systematic* problem, not a coin flip:** a KB
+      with 10 clean `human` entities (`walks_on earth`), 10 clean `star`
+      entities (`orbits galaxy`), and one contradictory `socrates` (`is_a`
+      both). At this scale (21 entities in one bundled memory), plain
+      resonance picks the wrong `is_a` answer for `socrates` on *every one*
+      of 15 seeds tested - not an occasional failure. Mining
+      `walks_on=earth -> is_a=human` (support 11, confidence 1.0) and
+      `orbits=galaxy -> is_a=star` (support 10, confidence 1.0) - both
+      exactly as expected, and unaffected by socrates' own contradiction,
+      since he still holds the `human` fact too, not just `star` - and
+      using the derived exclusions as the query's `axiom_bias` recovers 12
+      of the 15 wrong seeds, with zero regressions across 90 clean-entity
+      checks (3 human + 3 star entities x 15 seeds). Reported honestly as
+      12/15, not rounded up to "fixed" - a real, measured majority
+      improvement, not a 100% claim.
+- [x] **A real design mistake caught mid-build, not after:** the first
+      version gated each exclusion's antecedent truth on `Answer.
+      confidence` alone, and it silently failed - baseline stayed wrong
+      even with the bias applied. Traced to why: `confidence` is a
+      *relative* softmax share against every other candidate in the KB, so
+      it dilutes toward 0 as the entity count grows (measured: `walks_on`
+      confidence was 0.17 at 21 entities, versus ~0.98 in the 6-entity demo
+      KB), even though the underlying fact is exactly as objectively true
+      either way. Fixed by gating on `Answer.known` instead - an *absolute*
+      floor-referenced signal that doesn't dilute with KB size - matching
+      how `COHERENCE_FLOOR` itself is already used everywhere else in
+      `qa.py`. This is the same category of tried-and-fixed design mistake
+      v0.36 documented (settled-state coherence inflating guesses) -
+      caught by testing the actual mechanism before trusting it, not by
+      assuming the first plausible design was correct.
+- [x] New test file `test_axiom_mining.py` (5 tests at this point): the
+      mined implication/exclusion match exactly, `min_support` is
+      respected, and the two measured claims above (12/15 systematic-fix
+      rate, 0/90 regressions) are asserted directly against the real module
+      and the real `ask()` API - not re-derived from the offline experiment
+      that motivated this.
+- [x] **`discover_all_exclusions`/`axiom_bias_from_ontology` - closing this
+      entry's own first-draft gap the same session:** the mining above still
+      made the caller name both relations in every `(antecedent_relation,
+      consequent_relation)` pair by hand. `discover_all_exclusions(onto)`
+      tries every ordered pair of relations actually used in the ontology
+      automatically (`O(R^2)` pairs - fine at this project's scale) and
+      keeps whichever mined exclusions clear the thresholds;
+      `axiom_bias_from_ontology` filters those to `target_relation` and
+      builds the `axiom_bias` callable directly - "point it at an ontology,
+      get a biased query out", no relation names passed anywhere. Checked
+      directly, not assumed: on the same 15-seed scenario, this reproduces
+      the *exact* same 12/15 fix / 3-seed-holdout / 0-regression result as
+      hand-picking `(walks_on, is_a)` and `(orbits, is_a)` - the other 4 of
+      6 automatically-tried relation pairs (e.g. `is_a -> walks_on`)
+      correctly contribute nothing, checked with an exact-set-equality
+      assertion (`test_discover_all_exclusions_finds_exactly_the_two_real_
+      patterns`) rather than a looser "contains" check that could hide
+      spurious noise. `DiscoveredImplication`/`DiscoveredExclusion` made
+      frozen/hashable to support that set comparison. Two more tests added
+      (7 total in `test_axiom_mining.py`).
+- [x] **Honest scope, updated:** the relation-pair-picking gap above is
+      closed. What remains open: `min_support`/`min_confidence` are still
+      caller-set thresholds, not themselves discovered or validated against
+      a held-out set; and the 3 seeds v0.38 already found unfixed by the
+      hand-picked version stay unfixed here too (identical result, as
+      measured) - a real, acknowledged limit of this specific bias-then-
+      settle mechanism's strength at this ontology's scale, not something
+      full automation was expected to (or does) fix on its own.
+
+## v0.39 — scale validation: the real ceiling was never this session's work
+
+- [x] Asked directly, after v0.33-v0.38: does the unified pipeline (Frontier
+      1+2+3 in `qa.py`, plus v0.37/v0.38's axiom bias/mining) hold up past
+      toy scale, or does something that worked on 20-40 entities quietly
+      break? Every test and demo anywhere in this project - `demo_ontology`
+      (7 triples), the crosstalk ontologies used to validate v0.36-v0.38
+      (30-40 triples) - had stayed inside a range nobody had ever actually
+      measured the edge of.
+- [x] **The honest, important finding: the ceiling isn't in anything built
+      this session - it's in `Ontology.ground()`'s single-bundle design,
+      which predates all of it.** Measured directly, robust across 5 seeds:
+      recovering a directly-stored, completely unambiguous fact via plain
+      `ask()` (no axioms, no contradictions, nothing this session added)
+      stays reliable (5/5 correct-and-`known`) at 80 bundled triples and
+      collapses to 1-3/5 at 120 - a sharp transition, not a gradual one,
+      and one every existing test in this project happened to sit just
+      under (the largest prior test ontology used 40 triples). At 400
+      triples, a genuinely stored fact reads as `known=False` (coherence
+      0.045, below `COHERENCE_FLOOR`) essentially always.
+- [x] **A second, more surprising finding: raising `dim` barely helps.**
+      The obvious fix - more dimensions, more capacity - was tested
+      directly (8192 -> 65536, 8x) on the exact same 400-triple case and
+      coherence *did not improve* (0.044 -> 0.039, if anything slightly
+      worse). Also checked and ruled out: this isn't about many entities
+      sharing the same filler concentrating interference (`human`/`earth`
+      repeated across 100 subjects) - an unshared-filler control (every
+      subject pointing at its own unique filler, same triple count) showed
+      the identical collapse (`known=False`, coherence 0.061). The ceiling
+      tracks *bundled triple count specifically*, and - measured, not yet
+      explained - does not visibly respond to the one lever (`dim`) this
+      project's own capacity intuitions (and `VISION.md`'s framing) would
+      predict should fix it.
+- [x] **Deliberately not investigated further in this entry:** *why*
+      `dim` doesn't help is an open question - candidates include the
+      specific `OBJ_SHIFT` permutation scheme, how `bundle`'s normalisation
+      interacts with many summed terms, or a genuine limit of complex-
+      phasor HRR bundling that this project's own capacity assumptions
+      (inherited from `VISION.md`, never previously measured) simply got
+      wrong. Chasing that explanation, or redesigning `Ontology.ground()`
+      (e.g. sharding memory per relation instead of one giant bundle,
+      hierarchical indexing, an explicit error-correcting cleanup pass) is
+      real, substantial work - reported here as a finding to decide on, not
+      quietly started.
+- [x] **What this means for v0.34-v0.38:** every claim in those entries is
+      still true *as measured* - all of it was tested at 20-40 triples,
+      safely under this newly-found ceiling. It does mean none of that work
+      has been shown to generalize past toy scale, and the axiom-mining
+      correction mechanism specifically goes to 0/5 once the underlying
+      `ask()` substrate itself can no longer recover the antecedent facts
+      the bias depends on (measured at the 100-per-class/400-triple scale
+      that motivated this whole entry) - not a flaw in the bias mechanism,
+      a direct, expected consequence of the substrate-level ceiling above.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

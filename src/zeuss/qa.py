@@ -19,7 +19,9 @@ so a two-hop deduction is honestly reported as less certain than a one-hop one.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Callable
 
 from .tier2_substrate.collapse import dimensional_collapse, softmax
 from .tier2_substrate.energy import Landscape, settle
@@ -114,7 +116,7 @@ def _entity_codebook(onto: Ontology) -> Codebook:
     return cb
 
 
-def _cleanup(onto: Ontology, residue, beta: float):
+def _cleanup(onto: Ontology, residue, beta: float, axiom_bias: Callable[[str], float] | None = None):
     """Collapse a residue wave onto the nearest KB entity (associative read).
 
     Scores each candidate by :func:`~zeuss.tier2_substrate.resonance.
@@ -181,6 +183,29 @@ def _cleanup(onto: Ontology, residue, beta: float):
     coherence from the untouched residue keeps that guarantee exactly as
     before while still letting the settled state's argmax correct which
     candidate is picked.
+
+    ``axiom_bias`` (v0.37) is the hook that closes v0.36's own documented
+    remaining gap: a `Theory`/`Rule` (Frontier 2's *propositional* logic
+    formalism, `compiler.py`) still had no bridge to `Ontology`'s relational
+    facts. Rather than force that bridge through a contrived shared data
+    model, this exposes the minimal real seam - an optional ``candidate ->
+    additional energy penalty`` callable, applied as `exp(-penalty)` on top
+    of that candidate's occupancy-derived `Landscape` weight (the same
+    Boltzmann convention `grounding.compile_theory` already uses for its own
+    attractor weights). The caller builds the penalty from a `Rule` and
+    *other* `ask()` calls about the same subject - letting one relation's
+    already-established fact veto a logically-inconsistent candidate for a
+    different, genuinely ambiguous one. Measured on a constructed case where
+    this matters (a KB with a real data contradiction - `socrates is_a` both
+    `human` and `star` - so raw resonance alone is close to a coin flip,
+    seed-dependent): a `Rule("walks_on_earth", "not_star")`, its antecedent
+    filled in from a separate `ask(subject, "walks_on")`, corrects 4 of 10
+    seeds' wrong `star` pick to `human`, and 0 of the 6 already-correct
+    seeds regress (`test_axiom_bias_resolves_a_genuine_data_contradiction`).
+    Like the settled-state itself, ``axiom_bias`` only ever influences which
+    candidate wins - never ``coherence``/``confidence``, for the identical
+    reason given above. Default ``None`` is a true no-op (unchanged
+    `Landscape` weights), so every prior test/behavior is untouched.
     """
     entity_cb = _entity_codebook(onto)
     _, dim_info = dimensional_collapse(entity_cb, residue, inverse_temperature=beta)
@@ -194,7 +219,10 @@ def _cleanup(onto: Ontology, residue, beta: float):
 
     landscape = Landscape()
     for c in candidates:
-        landscape.add(onto.entity(c), weight=live_probs[c])
+        weight = live_probs[c]
+        if axiom_bias is not None:
+            weight *= math.exp(-axiom_bias(c))
+        landscape.add(onto.entity(c), weight=weight)
     z_settled, _ = settle(
         landscape, residue, steps=_CLEANUP_SETTLE_STEPS, step_size=0.3, inverse_temperature=beta
     )
@@ -204,10 +232,23 @@ def _cleanup(onto: Ontology, residue, beta: float):
     return candidates[top], ranked, float(scores[top]), float(probs[top]), dim_info["k_live"], dim_info["eff_dim"]
 
 
-def ask(onto: Ontology, memory, subject: str, relation: str, beta: float = 12.0) -> Answer:
-    """Single hop: probe ``memory`` for ``(subject, relation, ?)``."""
+def ask(
+    onto: Ontology,
+    memory,
+    subject: str,
+    relation: str,
+    beta: float = 12.0,
+    axiom_bias: Callable[[str], float] | None = None,
+) -> Answer:
+    """Single hop: probe ``memory`` for ``(subject, relation, ?)``.
+
+    ``axiom_bias`` - see `_cleanup`'s docstring - lets a `Rule`/`Theory`
+    penalty (typically built from other `ask()` calls about ``subject``)
+    veto a candidate that would be logically inconsistent with an
+    already-established fact. ``None`` (default) is a true no-op.
+    """
     residue = onto.step(memory, onto.entity(subject), relation)
-    name, ranked, coherence, confidence, k_live, eff_dim = _cleanup(onto, residue, beta)
+    name, ranked, coherence, confidence, k_live, eff_dim = _cleanup(onto, residue, beta, axiom_bias)
     return Answer(
         answer=name,
         coherence=coherence,
@@ -226,8 +267,11 @@ def chain(
     relation: str,
     max_hops: int = 6,
     beta: float = 12.0,
+    axiom_bias: Callable[[str], float] | None = None,
 ) -> Chain:
     """Iterate the one-hop operator to walk ``relation``'s transitive closure.
+
+    ``axiom_bias`` (see `ask`/`_cleanup`) is applied at every hop.
 
     Each hop: take a wave step, collapse the residue onto the nearest entity
     (the discretisation), and re-inject that clean entity as the next subject.
@@ -259,7 +303,7 @@ def chain(
     running = 1.0
     for _ in range(max_hops):
         residue = onto.step(memory, ent, relation)
-        name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta)
+        name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta, axiom_bias)
         if coherence < COHERENCE_FLOOR or name in visited:
             break
         running *= coherence
