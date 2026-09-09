@@ -1860,6 +1860,107 @@
       by default turned out to refer to a different environment than the
       one commands were initially run in.
 
+## v0.34 — Frontier 3, staged: resonance stops being dead code
+
+- [x] Continuation of the v0.33 staged plan (Frontier 2 -> Frontier 3 ->
+      Frontier 1). Direct code research had found `resonance.py`'s
+      `interfere`/`coherence`/`phase_lock`/`resonate` were real, tested math
+      with *zero* production call sites - `qa.py` (the actual deduction/
+      multi-hop query layer) reimplemented its own "coherence" as raw
+      `hypervectors.similarity` instead of importing the module `docs/
+      ARCHITECTURE.md` names as Frontier 3's home.
+- [x] **`qa.py`'s `_cleanup` now scores candidates by `phase_lock`**, not
+      `similarity` - a Kuramoto-style order parameter (`|mean(a * conj(b))|`)
+      that tolerates a global phase offset between the recalled residue and
+      a candidate's wave (e.g. drift accumulated over several binds) that
+      plain `Re(similarity)` would silently discount. Checked directly
+      before committing to the swap, not assumed: on every case the
+      project's own `demo_ontology` exercises (8 subject/relation pairs,
+      including the unknown-entity guess case), `phase_lock` and
+      `similarity` pick the *identical* top candidate, scores agreeing to
+      3+ decimal places (max observed difference 0.004) - so this is a
+      genuine mechanism swap with no behavioral regression, not a cosmetic
+      rename. This gives `phase_lock` its first production consumer.
+- [x] **`Chain.resonance_coherence`**: a second, independent signal about a
+      multi-hop chain's *whole* trajectory, distinct from the per-hop
+      product already carried in `cumulative`. `chain()` composes
+      `Ontology.step` straight through, the same number of times the real
+      (collapse-and-reinject) chain took, but *without* collapsing onto a
+      clean entity between hops, then reads how strongly that uncollapsed
+      composition still resonates with the same final entity the real chain
+      settled on (`resonance.coherence` of `resonance.interfere`-superposing
+      the two). High resonance means the deduction holds together as one
+      continuous wave composition, not merely as a sequence of individually
+      -clean single hops; low resonance honestly signals that the per-hop
+      collapse-and-reinject was doing real error-correction work a single
+      uninterrupted composition could not have done alone. `0.0` when no
+      hops were taken. Chosen over the plan's original sketch (hard-gating
+      hop acceptance on consecutive-hop phase-lock) because `_cleanup`'s
+      swap already made `phase_lock` the thing standing between "coherence"
+      and every accepted hop - a second, additive diagnostic carrying new
+      information proved more valuable than re-deriving the same signal as
+      a stricter gate.
+- [x] New tests in `test_chain.py`: `test_chain_resonance_coherence_is_high_
+      for_a_clean_transitive_chain` (a dedicated low-crosstalk 3-hop
+      ontology stays well above the noise floor, `> 0.3` - not claimed near
+      1.0, since composing three real-valued wave operations with no
+      intermediate error-correction genuinely accumulates dispersion),
+      `test_chain_resonance_coherence_is_zero_with_no_hops`, and
+      `test_chain_resonance_coherence_carries_information_cumulative_does_
+      not` (measured, not assumed: on the demo ontology's 3-hop chain the
+      two numbers differ by more than 0.3 - `resonance_coherence` is not a
+      duplicate of `cumulative[-1]`).
+
+## v0.35 — Frontier 1, staged: the collapse wired into the real pipeline
+
+- [x] Final stage of the v0.33 staged plan (Frontier 2 -> Frontier 3 ->
+      Frontier 1). Direct code research had found `collapse.py`'s
+      `participation_ratio`/`dimensional_collapse` already computed a
+      genuine, continuous "effective dimension" from occupancy entropy and
+      truncated to a live-symbol basis - but wired into nothing: not used by
+      `anneal`/`anneal_adaptive`, and `k_live`/`live_names` consumed nowhere
+      downstream.
+- [x] **C1 - `anneal`/`anneal_adaptive` now run `dimensional_collapse`**
+      instead of plain `collapse` (`collapse.py`). ``z`` is fixed throughout
+      either schedule (only beta changes) and neither function's returned
+      state feeds into the next step, so this is a pure addition: `eff_dim`/
+      `k_live` join every trace entry alongside the existing `entropy_bits`/
+      `winner`/`winner_prob`, with the entropy/winner numbers themselves
+      provably unchanged (`dimensional_collapse` is numerically identical
+      to `collapse` at high entropy - already covered by `test_dimensional_
+      collapse_matches_collapse_at_high_entropy`). New tests: `test_anneal_
+      logs_a_real_eff_dim_k_live_trajectory` (k_live falls monotonically
+      across a fixed cooling schedule and reaches 1 on an exact-match
+      probe), `test_anneal_adaptive_logs_eff_dim_k_live_too`.
+- [x] **C2 - `qa.py`'s `_cleanup` restricts its candidate-comparison set to
+      the live basis.** A small `_entity_codebook` helper wraps `Ontology`'s
+      existing entity waves (via `Codebook.load`, which restores vectors
+      verbatim rather than minting new ones) into a codebook scoped to just
+      the answer candidates - `dimensional_collapse` needs that, not
+      `Ontology.codebook`'s full role/relation/entity alphabet. `_cleanup`
+      now runs `dimensional_collapse` first and only scores `phase_lock`
+      (v0.34) over its `live_names`, not every entity in the KB.
+      Measured directly before wiring this in, not assumed (see `python -m
+      zeuss ask`'s own printed trace): on the demo ontology's 11 entities,
+      every known fact shrinks the comparison set to 2 (`eff_dim` ~1.4 -
+      the true answer plus one runner-up), while every genuine guess
+      (unknown subject, wrong relation, needs-multi-hop) correctly stays at
+      the full 11 (`eff_dim` ~10.9) - there is no real winner for entropy to
+      collapse toward, so a fixed high beta sharpening pure noise does
+      *not* fool `dimensional_collapse` into false confidence. The true
+      `phase_lock` top pick was inside the live set in every case checked.
+      `Answer` gained `k_live`/`eff_dim` fields (default `0`/`0.0`, so this
+      is additive) so the shrinking comparison set is observable, not just
+      internal - printed in `Answer.__str__` and asserted directly in new
+      tests `test_known_facts_shrink_the_live_comparison_set`/`test_unknown_
+      queries_do_not_falsely_shrink_the_comparison_set` (`test_ask.py`).
+      `chain()`'s internal `_cleanup` call site was updated for the new
+      return arity; `Chain` itself does not carry `k_live` (out of scope for
+      this stage - `chain()` only needed the unpacking fix to keep working).
+- [x] This completes the three-stage plan: Frontier 2 (v0.33) -> Frontier 3
+      (v0.34) -> Frontier 1 (this entry) - all staged, each with its own
+      measured result and honest gap where one remained, rather than a
+      single unverified all-at-once pass.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,

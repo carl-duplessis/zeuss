@@ -336,16 +336,29 @@ def train_codebook(
     return losses
 
 
+_ANNEAL_TRACE_KEYS = ("entropy_bits", "winner", "winner_prob", "eff_dim", "k_live")
+
+
 def anneal(codebook: Codebook, z, schedule=(0.5, 1, 2, 4, 8, 16, 32)):
     """Run a cooling schedule and record entropy dropping toward a decision.
 
     Returns a list of per-step info dicts - a trace of continuous ambiguity
-    crystallising into a discrete symbol.
+    crystallising into a discrete symbol. Uses :func:`dimensional_collapse`
+    rather than plain :func:`collapse` so ``eff_dim``/``k_live`` - Frontier
+    1's own "effective dimension" primitive, previously computed nowhere in
+    this pipeline - become part of that same trace: the live basis actually
+    shrinking as beta rises, not just entropy_bits falling. ``z`` is fixed
+    throughout (only beta changes), so this is a pure addition: at high
+    entropy ``dimensional_collapse`` is numerically identical to ``collapse``
+    (checked directly - see ``test_dimensional_collapse_matches_collapse_at_
+    high_entropy``), and neither function's returned state feeds into the
+    next step here, so every existing ``entropy_bits``/``winner``/
+    ``winner_prob`` value in the trace is unchanged.
     """
     trace = []
     for beta in schedule:
-        _, info = collapse(codebook, z, inverse_temperature=beta)
-        trace.append({"beta": float(beta), **{k: info[k] for k in ("entropy_bits", "winner", "winner_prob")}})
+        _, info = dimensional_collapse(codebook, z, inverse_temperature=beta)
+        trace.append({"beta": float(beta), **{k: info[k] for k in _ANNEAL_TRACE_KEYS}})
     return trace
 
 
@@ -370,6 +383,11 @@ def anneal_adaptive(
     (unambiguous probe) grows beta quickly, reaching the discrete decision in
     fewer steps than a fixed static schedule needs. Stops once entropy drops
     below ``entropy_tol`` or ``beta_max``/``max_steps`` is hit.
+
+    Each trace entry also carries ``eff_dim``/``k_live`` (see :func:`anneal`
+    for why this now uses :func:`dimensional_collapse` instead of plain
+    :func:`collapse`) - the live basis shrinking in lockstep with the
+    adaptive schedule's own beta growth.
     """
     sims = sorted(codebook.similarities(z).values(), reverse=True)
     margin = (sims[0] - sims[1]) if len(sims) > 1 else 1.0
@@ -379,8 +397,8 @@ def anneal_adaptive(
     beta = beta_start
     trace = []
     for _ in range(max_steps):
-        _, info = collapse(codebook, z, inverse_temperature=beta)
-        trace.append({"beta": float(beta), **{k: info[k] for k in ("entropy_bits", "winner", "winner_prob")}})
+        _, info = dimensional_collapse(codebook, z, inverse_temperature=beta)
+        trace.append({"beta": float(beta), **{k: info[k] for k in _ANNEAL_TRACE_KEYS}})
         if info["entropy_bits"] <= entropy_tol or beta >= beta_max:
             break
         beta = min(beta * growth, beta_max)

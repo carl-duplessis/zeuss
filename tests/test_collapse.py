@@ -70,6 +70,31 @@ def test_anneal_adaptive_converges_faster_on_an_unambiguous_probe():
     assert len(trace_adapt) < len(trace_fixed)
 
 
+def test_anneal_logs_a_real_eff_dim_k_live_trajectory():
+    """Frontier 1 wiring (v0.34): anneal() now runs dimensional_collapse
+    instead of plain collapse, so eff_dim/k_live become a real, observable
+    trajectory over the cooling run - not an isolated function exercised
+    only in its own tests. k_live must shrink (never grow) as beta rises,
+    the same monotonic direction entropy_bits already has, and reach 1 at
+    the schedule's top beta on this unambiguous exact-match probe."""
+    cb = _codebook_with_distractors(seed=1)
+    probe = cb.symbol("red")
+    trace = anneal(cb, probe, schedule=(0.5, 1, 2, 4, 8, 16, 32))
+    k_live_trace = [row["k_live"] for row in trace]
+    assert all(k_live_trace[i] >= k_live_trace[i + 1] for i in range(len(k_live_trace) - 1))
+    assert k_live_trace[0] > k_live_trace[-1]
+    assert k_live_trace[-1] == 1
+    assert all(row["eff_dim"] >= 1.0 for row in trace)
+
+
+def test_anneal_adaptive_logs_eff_dim_k_live_too():
+    cb = _codebook_with_distractors(seed=1)
+    probe = cb.symbol("red")
+    trace = anneal_adaptive(cb, probe)
+    assert "eff_dim" in trace[0] and "k_live" in trace[0]
+    assert trace[-1]["k_live"] <= 2 < trace[0]["k_live"]
+
+
 def test_anneal_adaptive_grows_beta_slower_for_an_ambiguous_probe():
     cb = _codebook_with_distractors(seed=1)
     probe_clear = cb.symbol("red")
