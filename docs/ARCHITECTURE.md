@@ -84,6 +84,17 @@ permutation breaks that collision. `qa.py`'s `ask`/`chain`/`entails` iterate
 `Ontology.step` (one deductive hop) to answer single- and multi-hop queries,
 each carrying a coherence that honestly separates known facts from guesses.
 
+As of v0.34-v0.36, `qa.py`'s internal `_cleanup` is where the diagram above
+stops being aspirational and becomes one real pipeline for every query:
+`dimensional_collapse` (Frontier 1) restricts the candidate entities to the
+live basis, that basis becomes a `Landscape` and `settle` (Frontier 2)
+relaxes the residue toward it, and `phase_lock` (Frontier 3) reads out both
+the settled state (to pick the winning candidate) and the original residue
+(to report an honest coherence - settling is a self-reinforcing attractor
+network by construction, so it cannot be trusted for "is this a guess";
+see `_cleanup`'s docstring for the failure mode this avoids). `chain`
+inherits this for every hop for free.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional

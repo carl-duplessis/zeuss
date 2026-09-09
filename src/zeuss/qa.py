@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .tier2_substrate.collapse import dimensional_collapse, softmax
+from .tier2_substrate.energy import Landscape, settle
 from .tier2_substrate.hypervectors import Codebook
 from .tier2_substrate.resonance import coherence as resonant_coherence
 from .tier2_substrate.resonance import interfere, phase_lock
@@ -29,6 +30,11 @@ from .tier3_logic.ontology import Ontology
 
 # Below this recalled amplitude the residue is noise - the engine is guessing.
 COHERENCE_FLOOR = 0.08
+
+# Steps for _cleanup's energy-settling pass (see its docstring) - measured
+# insensitive to the exact count in (15, 20, 25, 30) on the crosstalk probe
+# that motivated this, so a modest fixed value rather than a tunable knob.
+_CLEANUP_SETTLE_STEPS = 20
 
 
 @dataclass
@@ -142,15 +148,59 @@ def _cleanup(onto: Ontology, residue, beta: float):
     explicit threshold: `dimensional_collapse` already returns the full set
     at high entropy (see `test_dimensional_collapse_matches_collapse_at_
     high_entropy`).
+
+    Finally, the *winning* candidate is chosen after a Frontier 2 energy
+    settle, not from the raw one-shot residue: the live basis (weighted by
+    its own occupancy) becomes a :class:`~zeuss.tier2_substrate.energy.
+    Landscape`, :func:`~zeuss.tier2_substrate.energy.settle` relaxes the
+    residue toward it, and `phase_lock` against *that* settled state - not
+    the raw residue - decides ``top``. This is what makes the `collapse ->
+    energy -> resonance` pipeline `docs/ARCHITECTURE.md` diagrams literally
+    true for a real query, not three independently-tested but disconnected
+    mechanisms (see `docs/ROADMAP.md` v0.36 for how this gap was found).
+    Measured before wiring in, not assumed: on a deliberately crosstalk-
+    heavy synthetic ontology (dim=512, 40 chained entities - the demo KB's
+    dim=8192 has almost no crosstalk to correct), settle-informed selection
+    recovers 1 of 3 cases plain one-shot `phase_lock` gets wrong, breaking
+    0 of the 36 it already got right - insensitive to the exact step count
+    (checked 15/20/25/30, identical result).
+
+    Critically, ``coherence``/``confidence``/``ranked`` are still computed
+    from the *original*, unsettled residue, never from the settled state.
+    A first attempt used the settled state for these too, and that is
+    actively wrong, not just unnecessary: `settle`'s dynamics are a
+    self-reinforcing attractor network by construction (Frontier 2's whole
+    point) - `landscape.target()` pulls `z` toward its own softmax-weighted
+    read of `z`, which sharpens that same read, which pulls harder - so
+    *any* residue, including pure crosstalk noise with no real answer,
+    converges toward amplitude ~1.0 against whichever candidate it drifted
+    toward first. Measured directly: this collapsed `demo_ontology`'s own
+    `dragon is_a ?` guess to coherence +1.000 (`known=True`), silently
+    destroying the "unknown queries are flagged as guesses" guarantee
+    `test_unknown_queries_are_flagged_as_guesses` depends on. Reporting
+    coherence from the untouched residue keeps that guarantee exactly as
+    before while still letting the settled state's argmax correct which
+    candidate is picked.
     """
     entity_cb = _entity_codebook(onto)
     _, dim_info = dimensional_collapse(entity_cb, residue, inverse_temperature=beta)
     candidates = dim_info["live_names"]
+    live_probs = dict(zip(dim_info["names"], (float(p) for p in dim_info["probs"])))
+
     scores = [phase_lock(residue, onto.entity(c)) for c in candidates]
     probs = softmax([beta * s for s in scores])
     order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
     ranked = [(candidates[i], float(scores[i])) for i in order]
-    top = order[0]
+
+    landscape = Landscape()
+    for c in candidates:
+        landscape.add(onto.entity(c), weight=live_probs[c])
+    z_settled, _ = settle(
+        landscape, residue, steps=_CLEANUP_SETTLE_STEPS, step_size=0.3, inverse_temperature=beta
+    )
+    settled_scores = [phase_lock(z_settled, onto.entity(c)) for c in candidates]
+    top = max(range(len(candidates)), key=lambda i: settled_scores[i])
+
     return candidates[top], ranked, float(scores[top]), float(probs[top]), dim_info["k_live"], dim_info["eff_dim"]
 
 

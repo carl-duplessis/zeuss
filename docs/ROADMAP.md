@@ -1962,6 +1962,78 @@
       measured result and honest gap where one remained, rather than a
       single unverified all-at-once pass.
 
+## v0.36 — the three frontiers actually cooperate on one query, not three silos
+
+- [x] Direct follow-up to v0.33-v0.35: asked afterward whether the substrate
+      was doing what `VISION.md` actually claims - a *unified* engine, not
+      three independently-tested mechanisms. Direct code research found the
+      honest answer was no: `qa.py`'s deduction path (Frontier 1 + 3, wired
+      together in v0.34/v0.35) and `grounding.py`'s theory compilation
+      (Frontier 2) were two disconnected pipelines sharing a codebase -
+      `docs/ARCHITECTURE.md`'s own `collapse -> energy -> resonance` diagram
+      was aspirational, not real, since no query ever passed through
+      `energy.py`'s `Landscape`/`settle`.
+- [x] **Before writing any code, tested whether energy settling would add
+      real capability or just be cosmetic** (the standard set when this gap
+      was first identified): built a deliberately crosstalk-heavy synthetic
+      ontology (`dim=512`, 40 entities chained into one bundled memory - the
+      demo KB's `dim=8192` has almost no crosstalk to correct) and compared
+      one-shot `phase_lock` cleanup against settling the residue against a
+      `Landscape` built from the live basis before reading out. Result:
+      settle-informed selection recovered 1 of 3 cases one-shot cleanup got
+      wrong, and broke 0 of the 36 it already got right - modest but real,
+      and insensitive to the exact step count (checked 15/20/25/30,
+      identical result each time). That was the go/no-go signal to wire it
+      into `qa.py` for real.
+- [x] **A real negative result caught before it shipped, not after:** the
+      first design read `coherence`/`confidence` from the *settled* state
+      too (not just which candidate wins). That is actively wrong, not just
+      redundant - `settle`'s dynamics are a self-reinforcing attractor
+      network by construction (Frontier 2's entire point: `landscape.
+      target()` pulls `z` toward its own softmax-weighted read of `z`, which
+      sharpens that read, which pulls harder), so *any* residue - including
+      pure crosstalk noise with no real answer - drifts toward amplitude
+      ~1.0 against whichever candidate it leaned toward first. Measured
+      directly: this collapsed `demo_ontology`'s own `dragon is_a ?` guess to
+      coherence `+1.000` (`known=True`), silently breaking `test_unknown_
+      queries_are_flagged_as_guesses`. Fixed by decoupling the two roles
+      settling can play: the settled state's `phase_lock` argmax decides
+      *which* candidate wins (where energy relaxation can correct a noisy
+      one-shot pick), but `coherence`/`confidence`/`ranked` are still read
+      from the *original*, unsettled residue (which must stay an honest
+      "does this genuinely ring true" signal). This is the kind of tried-and
+      -rejected design this project documents on purpose (see v0.30) rather
+      than silently discarding.
+- [x] **`qa.py`'s `_cleanup`** now runs, for every single- and multi-hop
+      query: `dimensional_collapse` restricts to the live basis (Frontier 1,
+      v0.35) -> that basis becomes a `Landscape`, weighted by its own
+      occupancy, and `settle` relaxes the residue toward it (Frontier 2,
+      new) -> `phase_lock` reads out the winner from the settled state and
+      the honest coherence from the original residue (Frontier 3, v0.34).
+      `chain()` inherits this on every hop for free, since it already calls
+      `_cleanup` internally - no separate change needed there. `docs/
+      ARCHITECTURE.md` updated to say this plainly: the diagram is no longer
+      aspirational for this code path.
+- [x] New tests in `test_ask.py`: `test_energy_settling_corrects_a_
+      crosstalk_error_without_regressing` (asserts the one specific
+      correction directly through the real `ask()` API, `e19 r1 -> e20`
+      where one-shot cleanup picks `e39`, plus zero regressions across all
+      36 already-correct cases on that same ontology) and `test_energy_
+      settling_does_not_inflate_guessed_coherence` (regression guard for the
+      exact failure mode found above - `dragon is_a ?` must stay well below
+      `COHERENCE_FLOOR`, nowhere near the ~1.0 a settled-coherence design
+      would report). Full suite still green after this change.
+- [x] **Honest scope of what remains unaddressed:** this unifies Frontiers
+      1+2+3 inside `qa.py`'s relational deduction. `grounding.py`'s own
+      compile-a-`Theory`-into-a-`Landscape` path still doesn't call into
+      `Ontology`/`qa.py` at all - a `Theory`'s propositional variables and an
+      `Ontology`'s entities are still different data models with no bridge
+      between them. Whether that bridge is worth building (e.g. letting an
+      `Ontology`'s stored facts double as axioms a `Theory` can reference)
+      is an open question, not assumed - unlike this entry's `qa.py` change,
+      nobody has yet checked whether it would add real capability or just
+      be more surface area.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
