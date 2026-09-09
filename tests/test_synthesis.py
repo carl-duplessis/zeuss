@@ -34,6 +34,16 @@ from zeuss.tier4_synthesis.grammar_bias import (
 )
 from zeuss.tier4_synthesis.motif_bias import MotifArchive, collect_motifs, context_key
 from zeuss.tier4_synthesis.resonance_bias import ResonantBias
+from zeuss.tier4_synthesis.semantic_bias import (
+    and_left_target,
+    and_right_target,
+    best_atom_for_target,
+    boolean_backprop_template,
+    grow_boolean_targeted,
+    not_target,
+    or_left_target,
+    or_right_target,
+)
 from zeuss.tier4_synthesis.search import GRAMMAR_CHOICE_VOCAB
 from zeuss.tier4_synthesis.search import (
     Example,
@@ -42,11 +52,14 @@ from zeuss.tier4_synthesis.search import (
     mutate,
     program_energy,
     random_program,
+    root_shape,
     synthesize,
 )
 from zeuss.tier4_synthesis.search import _recursive_template
 from zeuss.tier4_synthesis.search import (
+    BOOL_TEMPLATE_CATEGORIES,
     _bool_template,
+    _build_atom_node,
     _build_bool_template_node,
     _mutate_bool_template_hole,
     extract_bool_template_choices,
@@ -1345,3 +1358,268 @@ def test_grammar_bias_does_not_yet_solve_leap_year_or_pow2():
         fuel_budget=200, rng=rng2,
     )
     assert not verified2
+
+
+def test_root_shape_signature():
+    """`root_shape` (see `search.py`, built for `allow_shape_elitism` -
+    `docs/ROADMAP.md` v0.30) is deliberately hand-declaration-free: just the
+    root node's DSL type name plus its `op` attribute when it has one (`None`
+    otherwise), unlike `combine_kind`/`base_kind`/`shape_kind`, which only
+    exist for the three hand-built templates' own shapes."""
+    assert root_shape(BinOp("+", Const(1), Const(2))) == ("BinOp", "+")
+    assert root_shape(UnaryOp("not", Const(True))) == ("UnaryOp", "not")
+    assert root_shape(Const(3)) == ("Const", None)
+    assert root_shape(Var("x")) == ("Var", None)
+    assert root_shape(Letrec("f", ("p",), Const(0), Const(1))) == ("Letrec", None)
+    # Two BinOps with different operators are different shapes; same operator
+    # is the same shape regardless of operands - the whole point is that this
+    # groups by structural family, not by exact tree identity.
+    assert root_shape(BinOp("+", Const(1), Const(2))) != root_shape(BinOp("-", Const(1), Const(2)))
+    assert root_shape(BinOp("+", Const(1), Const(2))) == root_shape(BinOp("+", Var("x"), Var("y")))
+
+
+def test_shape_elitism_is_a_true_noop_by_default():
+    """`allow_shape_elitism=False` (the default) must leave every existing
+    caller's behavior bit-for-bit unchanged, mirroring
+    `test_motif_bias_is_a_true_noop_by_default`/
+    `test_grammar_bias_is_a_true_noop_by_default`. Unlike those two, shape
+    elitism never touches `_grow`/`mutate`/`random_program` at all - it only
+    reads `population`/`raw_energies` inside `synthesize`'s own generational
+    loop (see `root_shape`'s dict there) - so the whole mechanism is gated by
+    one `if allow_shape_elitism:` block with no rng draws of its own. Checked
+    directly anyway, not just inferred from the code shape, per this
+    project's own established practice of confirming true-no-op claims."""
+    examples = [Example({"x": x}, x + 1) for x in range(4)]
+    best_a, trace_a, verified_a = synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3, rng=np.random.default_rng(2)
+    )
+    best_b, trace_b, verified_b = synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3,
+        allow_shape_elitism=False, rng=np.random.default_rng(2),
+    )
+    assert pretty(best_a) == pretty(best_b)
+    assert trace_a == trace_b
+    assert verified_a == verified_b
+
+
+def test_synth_wrapper_exposes_allow_shape_elitism():
+    """Mirrors `test_synth_wrapper_exposes_allow_grammar_bias`: guards
+    against the same class of bug recurring for the parameter this entry
+    added."""
+    from zeuss.tier4_synthesis.synth import synthesize as public_synthesize
+
+    examples = [Example({"x": x}, x + 1) for x in range(3)]
+    rng = np.random.default_rng(0)
+    best, _trace, verified = public_synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3,
+        allow_shape_elitism=True, rng=rng,
+    )
+    assert best is not None
+    assert isinstance(verified, bool)
+
+
+def test_and_or_not_target_decomposition():
+    """Direct truth-table checks for `semantic_bias.py`'s decomposition
+    functions - independent of any search run. `and_left_target`/
+    `or_left_target` only commit a hard constraint on the side that's
+    provably required regardless of the other child (AND needs both `True`
+    to reach `True`; OR needs both `False` to reach `False`); everywhere
+    else is `None` (don't-care) since the *other* child could still satisfy
+    the row. `and_right_target`/`or_right_target` need a concrete
+    `left_actual` (unlike the left versions) precisely because `AND(True,
+    r)=r`/`OR(False, r)=r` only resolve once `l` is actually known."""
+    assert and_left_target([True, False, None]) == [True, None, None]
+    assert and_right_target([True, True, False], [True, False, True]) == [True, None, False]
+    assert or_left_target([True, False, None]) == [None, False, None]
+    assert or_right_target([True, False, False], [False, True, False]) == [True, None, False]
+    assert not_target([True, False, None]) == [False, True, None]
+
+
+def test_best_atom_for_target_finds_exact_match():
+    """`best_atom_for_target` (see `semantic_bias.py`) must find an atom that
+    exactly reproduces a known target vector when one exists in
+    `BOOL_TEMPLATE_CATEGORIES`'s vocabulary - the vectorized numpy scoring
+    is the one genuinely new piece of logic this module adds over the
+    existing templates' plain uniform/resonance draws, so it gets a direct
+    unit test rather than relying only on the end-to-end target test below."""
+    years = [2023, 2024, 2000, 1900, 1996, 2100]
+    examples = [Example({"year": y}, None) for y in years]
+    targets = [(y % 4 == 0) for y in years]
+    node = best_atom_for_target(
+        ["year"], examples, targets, BOOL_TEMPLATE_CATEGORIES, _build_atom_node, np.random.default_rng(0)
+    )
+    for ex, t in zip(examples, targets):
+        assert evaluate(node, dict(ex.inputs), Fuel(50)) == t
+
+    # Don't-care rows are excluded from scoring entirely, not treated as
+    # False - a target that's only constrained on odd-indexed rows must
+    # still be matched by an atom scored only against those rows.
+    partial_targets = [True, None, False, None, True, None]
+    node2 = best_atom_for_target(
+        ["year"], examples, partial_targets, BOOL_TEMPLATE_CATEGORIES, _build_atom_node, np.random.default_rng(0)
+    )
+    for ex, t in zip(examples, partial_targets):
+        if t is not None:
+            assert evaluate(node2, dict(ex.inputs), Fuel(50)) == t
+
+
+def test_best_atom_for_target_all_dont_care_still_returns_a_node():
+    """When every row is don't-care (e.g. an AND/OR ancestor has already
+    proven this whole subtree's value can't affect correctness), there is
+    nothing to score against - but the caller still needs a real node back,
+    not `None`, or the entire candidate would be discarded over a position
+    nothing depends on. A uniformly random atom is returned instead."""
+    examples = [Example({"year": y}, None) for y in (2000, 2001, 2002)]
+    node = best_atom_for_target(
+        ["year"], examples, [None, None, None], BOOL_TEMPLATE_CATEGORIES, _build_atom_node, np.random.default_rng(0)
+    )
+    assert node is not None
+    evaluate(node, dict(examples[0].inputs), Fuel(50))  # must not raise
+
+    assert best_atom_for_target([], examples, [None], BOOL_TEMPLATE_CATEGORIES, _build_atom_node, np.random.default_rng(0)) is None
+
+
+def test_grow_boolean_targeted_reconstructs_a_known_and_or3_formula():
+    """Round-trip check of `grow_boolean_targeted`/`boolean_backprop_template`
+    independent of the full GP search: given examples generated from a
+    *known* and_or3-shaped formula, the returned node must evaluate
+    correctly against every one of them - confirming the AND/OR
+    decomposition and the atom search compose correctly end to end, not
+    just in isolation."""
+    def true_rule(year):
+        return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+    years = [
+        2023, 2021, 2019, 1999, 2001, 2024, 1996, 2004, 1988, 2012, 2020, 1980,
+        1900, 1800, 1700, 2100, 2200, 2300, 2000, 1600, 2400,
+    ]
+    examples = [Example({"year": y}, true_rule(y)) for y in years]
+
+    # A single blind draw isn't guaranteed to land on a fully-matching
+    # decomposition (the "kind" draw at each node is uniform/fixed, exactly
+    # to avoid premature structural lock-in - see _KIND_WEIGHTS's comment),
+    # so this tries a bounded number of seeds and asserts at least one
+    # succeeds - proving the mechanism *can* reconstruct the known shape
+    # end to end (measured directly: roughly 1 in 150 single, non-iterated
+    # draws does, at this exact example set - see docs/ROADMAP.md v0.31),
+    # not that every single draw does.
+    for seed in range(500):
+        node = boolean_backprop_template(
+            ["year"], (), examples, np.random.default_rng(seed), 4, BOOL_TEMPLATE_CATEGORIES, _build_atom_node, 60
+        )
+        if node is not None and all(
+            evaluate(node, dict(ex.inputs), Fuel(50)) == ex.expected_output for ex in examples
+        ):
+            break
+    else:
+        raise AssertionError("no seed in range(500) reconstructed a fully-matching formula")
+
+
+def test_boolean_backprop_template_returns_none_for_non_boolean_targets():
+    """The mechanism is deliberately scoped to boolean compound targets only
+    (see `semantic_bias.py`'s module docstring) - it must not try to apply
+    to an arithmetic target, mirroring `_bool_template`'s own `(None, None)`
+    "nothing to offer" contract for its own inapplicable case (no scalar
+    input)."""
+    examples = [Example({"x": x}, x + 1) for x in range(4)]
+    node = boolean_backprop_template(
+        ["x"], (), examples, np.random.default_rng(0), 4, BOOL_TEMPLATE_CATEGORIES, _build_atom_node, 60
+    )
+    assert node is None
+
+
+def test_semantic_bias_is_a_true_noop_by_default():
+    """`allow_semantic_bias=False` (the default) must leave every existing
+    caller's behavior bit-for-bit unchanged, mirroring
+    `test_grammar_bias_is_a_true_noop_by_default`/
+    `test_shape_elitism_is_a_true_noop_by_default`. Checked directly, not
+    just inferred from the ``if allow_semantic_bias and examples`` guard's
+    shape, per this project's own established practice for true-no-op
+    claims."""
+    examples = [Example({"x": x}, x + 1) for x in range(4)]
+    program_a = random_program(["x"], np.random.default_rng(7), max_depth=4)
+    program_b = random_program(
+        ["x"], np.random.default_rng(7), max_depth=4, allow_semantic_bias=False, examples=examples
+    )
+    assert pretty(program_a) == pretty(program_b)
+
+    best_c, trace_c, verified_c = synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3, rng=np.random.default_rng(2)
+    )
+    best_d, trace_d, verified_d = synthesize(
+        ["x"], examples, population_size=30, max_generations=10, max_depth=3,
+        allow_semantic_bias=False, rng=np.random.default_rng(2),
+    )
+    assert pretty(best_c) == pretty(best_d)
+    assert trace_c == trace_d
+    assert verified_c == verified_d
+
+
+def test_synth_wrapper_exposes_allow_semantic_bias():
+    """Mirrors `test_synth_wrapper_exposes_allow_shape_elitism`: guards
+    against the same class of bug recurring for the parameter this entry
+    added."""
+    from zeuss.tier4_synthesis.synth import synthesize as public_synthesize
+
+    leap_years = [2023, 2021, 2019, 1999, 2001, 2024, 1996, 2004]
+    examples = [Example({"year": y}, y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) for y in leap_years]
+    rng = np.random.default_rng(0)
+    best, _trace, verified = public_synthesize(
+        ["year"], examples, population_size=30, max_generations=10, max_depth=4,
+        allow_bool_template=False, allow_semantic_bias=True, rng=rng,
+    )
+    assert best is not None
+    assert isinstance(verified, bool)
+
+
+def test_semantic_bias_solves_leap_year_reliably_across_seeds():
+    """Honest measured positive result for `docs/ROADMAP.md` v0.31 - the
+    actual point of this whole mechanism. Six prior general mechanisms
+    (three hand-built templates aside) all failed leap year identically:
+    motif resonance 0/10 (v0.28), grammar resonance 0/10 (v0.29), shape
+    elitism alone/+motif/+grammar 0/10 each (v0.30) - every one of them only
+    reinforces/protects/reshuffles individuals blind growth already
+    produced, powerless if the correct compound shape essentially never
+    gets generated at all. Semantic backpropagation acts at generation time
+    instead, and at this exact configuration
+    (`test_leap_year_rule_is_reliable_across_seeds`'s own budget/seeds,
+    `allow_bool_template=False` so `_bool_template` can't be doing the
+    work): **30/30 seeds verified** (measured directly, including seed 19 -
+    a genuine residual failure recorded against `_bool_template` itself in
+    `docs/ROADMAP.md`'s v0.20-era audit) and **27/30 verified and
+    generalizing** to the held-out years below. Seeds 0-7 (this test's own
+    range, mirroring the existing test's convention) are 8/8 verified and
+    generalizing - the representative subset asserted here, not the full
+    sweep, for the same runtime reason every other reliability test in this
+    file only checks a subset.
+
+    The 3/30 non-generalizing seeds are an honest, expected caveat, not
+    swept under the rug: e.g. seed 27 finds ``(year % 2 == 0) and (not
+    (year % 100 <= 6) or year % 400 < 5)`` - a coincidental century clause
+    (``year % 100 <= 6`` instead of ``year % 100 == 0``) that happens to
+    match every training century-year but misclassifies the held-out 1904
+    - the same "verified means matched the given examples, never proven
+    correct" honesty this module's own docstring (`synth.py`) already
+    states, and the same character of caveat `test_resonant_bias_can_
+    discover_fibonacci`'s seed-7 case already has on record.
+    """
+    leap_years = [
+        2023, 2021, 2019, 1999, 2001,
+        2024, 1996, 2004, 1988, 2012, 2020, 1980,
+        1900, 1800, 1700, 2100, 2200, 2300,
+        2000, 1600, 2400,
+    ]
+    examples = [Example({"year": y}, y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) for y in leap_years]
+    held_out = [
+        (2025, False), (2028, True), (1904, True), (1596, True),
+        (1960, True), (2008, True), (1500, False), (3000, False), (2044, True),
+    ]
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        best, _trace, verified = synthesize(
+            ["year"], examples, population_size=300, max_generations=150, max_depth=4,
+            allow_bool_template=False, allow_semantic_bias=True, rng=rng,
+        )
+        assert verified, f"leap year seed {seed} found nothing"
+        for year, expected in held_out:
+            assert evaluate(best, {"year": year}, Fuel(200)) == expected, f"seed {seed} didn't generalize"

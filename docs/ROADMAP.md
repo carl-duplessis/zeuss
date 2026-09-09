@@ -1439,6 +1439,204 @@
       and 4/8 isn't there yet.
 
 
+## v0.30 — shape elitism: honest negative result, and why
+
+- [x] Follow-up to v0.28/v0.29's shared diagnosis: both bias mechanisms'
+      failures on leap year/`2**n` were traced to the same premature-
+      lock-in pattern the three hand-built templates already avoid via
+      per-family elitism (`best_template_node`/`best_fold_template_node`/
+      `best_bool_template_node`) - once blind growth converges to a wrong
+      structure fast, `exp(-energy)` reinforcement amplifies *that*
+      structure's own choices/subtrees more than a rarer, correct one's.
+      `allow_shape_elitism` (`search.py`) generalizes the same protected-
+      slot-plus-guaranteed-refinement-offspring machinery to *any*
+      individual via an automatically-derived family signature
+      (`root_shape` - the root node's DSL type and operator, no hand-
+      declared vocabulary), rather than a template's own named hole-
+      choices - already implemented and committed, but never measured.
+      Measured this session, not assumed.
+- [x] Re-ran the same three controlled comparisons v0.28/v0.29 already ran,
+      same budgets/seeds, three conditions (`allow_shape_elitism` alone,
+      `+allow_motif_bias`, `+allow_grammar_bias`), corresponding hand
+      template disabled:
+      - Leap year (10 seeds): **0/10 verified** in all three conditions -
+        identical to v0.28/v0.29's own result.
+      - `sum_of_squares_via_fold` (8 seeds): **1/8** alone (matches blind
+        growth's own baseline, not an improvement), **0/8** combined with
+        either bias - *worse* than either bias alone (v0.28: 1/8, v0.29:
+        4/8), i.e. adding shape elitism on top actively hurt the one target
+        where a bias mechanism had shown real lift.
+      - `2**n` (8 seeds): **0/8** alone, **1/8 verified but non-
+        generalizing** combined with motif bias, **0/8** combined with
+        grammar bias - no case beats either bias's own unassisted result.
+
+      Zero improvement anywhere it was tried, and one real regression
+      (fold - shape elitism competing with grammar bias's own protected
+      slot for population share, worse than either alone).
+- [x] Diagnosed why, not just reported: shape elitism (like the five
+      mechanisms before it) only ever protects/reinforces an individual
+      that blind growth already produced. `_bool_template`'s own comment
+      already says why that's fatal here: blind growth reliably misses the
+      3-atom AND/OR nesting in the first place. If the correct shape
+      never appears in any generation of any attempt, `best_shape_node`
+      has nothing to ever populate for that family - there is no rare
+      individual for elitism to rescue, because it was never generated to
+      begin with. This is a *generative* coverage problem, not a
+      *selective* one, and no mechanism that only acts after generation
+      (six of them now, across v0.20-v0.30) can touch it.
+- [x] This is the pivot point for v0.31: the fix has to act *at*
+      generation time instead.
+- [x] New tests: `test_root_shape_signature` (direct unit check of the
+      automatically-derived family signature), `test_shape_elitism_is_a_
+      true_noop_by_default` (checked directly, not inferred - the
+      established practice for every true-no-op claim in this file), and
+      `test_synth_wrapper_exposes_allow_shape_elitism`. No dedicated
+      negative-result target test added (unlike v0.28/v0.29) - the honest
+      negative result here is a *combination* measurement (three
+      conditions x three targets) rather than a single representative
+      seed, and is recorded here rather than as a committed test that
+      would need to re-run all nine combinations on every suite run.
+
+
+## v0.31 — semantic backpropagation: generation-time construction fixes leap year
+
+- [x] Direct pivot from v0.30's diagnosis, per user pushback: "nothing we
+      have done or attempted has fixed the leap year or other problems" -
+      asked to step back from the whack-a-mole pattern (six mechanisms
+      across v0.20-v0.30, all in the same "reinforce/protect/reshuffle
+      whatever blind growth already produced" family, all landing on the
+      identical 0/10 leap-year wall) and find something categorically
+      different, general across future targets rather than another
+      per-issue patch.
+- [x] Root-cause framing, stated precisely: every one of the six prior
+      mechanisms operates *after* generation. None change what blind
+      top-down random growth actually *produces*. This project's own
+      docstrings already said why that's fatal for leap year:
+      `_bool_template`'s comment records that blind growth reliably misses
+      the rare 3-atom AND/OR nesting in the first place - so there is
+      nothing for reinforcement/elitism/restart to ever find and protect.
+      The fix needed to act *at* generation time, and be shape-agnostic (no
+      hand-declared vocabulary like `BOOL_TEMPLATE_CATEGORIES["shape_kind"]`,
+      or it's just a fourth per-target template).
+- [x] Built `tier4_synthesis/semantic_bias.py`: semantic backpropagation /
+      goal decomposition (well-established in program synthesis), scoped
+      honestly to compound *boolean* targets only (numeric/recursion
+      backprop - e.g. reading `y_n / y_(n-1) == 2` directly off the given
+      `(n, 2**n)` pairs - is a structurally analogous but separate problem,
+      not attempted here; a clear follow-up, not silently dropped). Given a
+      per-example target vector (`bool | None`, `None` = don't-care), grows
+      the boolean sub-grammar (`and`/`or`/`not`/comparison-atom) by
+      decomposing that target through the connective's *real truth-table
+      semantics* instead of growing blind and hoping:
+      - `and_left_target`/`or_left_target`: the hard constraint provable on
+        whichever child is grown first (`AND` needs both `True` to reach
+        `True`; `OR` needs both `False` to reach `False`); everywhere else
+        is don't-care, since the *other* child could still satisfy that row.
+      - `and_right_target`/`or_right_target`: computed only *after* the left
+        child is actually grown and evaluated against every example
+        (`AND(True, r)=r`/`OR(False, r)=r` - this is what resolves the
+        ambiguity the left-side split alone can't).
+      - `not_target`: elementwise negation, no don't-cares.
+      - `best_atom_for_target`: the base case - searches
+        `var_pool x BOOL_TEMPLATE_CATEGORIES["modulus"/"cmp"/"const"]` (the
+        *same* vocabulary `_bool_template` already uses, passed in by the
+        caller like `GrammarBias` takes `choice_vocab`, avoiding both a
+        circular import and a second, driftable copy) for the atom that
+        matches the most non-don't-care rows. Vectorized with `numpy` over
+        each example's variable value rather than calling `evaluate` per
+        candidate, so the ~300-combination search stays cheap regardless of
+        example-set size. When every row is don't-care (a rarer-than-
+        expected but real case - an AND/OR ancestor already proved this
+        whole subtree's value can't affect correctness), returns a
+        uniformly random atom rather than `None`: found and fixed during
+        this session's own smoke-testing - without it, one indifferent leaf
+        anywhere in the tree discarded the *entire* candidate over a
+        position nothing depended on, wasting the draw for no reason (see
+        `test_best_atom_for_target_all_dont_care_still_returns_a_node`).
+      - The `and`/`or`/`not` kind draw at each node is deliberately
+        fixed/uniform, never resonance-biased (`_KIND_WEIGHTS`) - the same
+        established caution already applied to `shape_kind`/`combine_kind`/
+        `base_kind`: a structural/family choice risks premature commitment
+        to the wrong family from early noise, the exact failure this whole
+        mechanism exists to route around.
+- [x] Wired in as a *seventh* opt-in (`allow_semantic_bias`, default
+      `False`), competing at the same `template_rate` gate the three
+      existing templates already use, immediately after `_bool_template`'s
+      own check, in `random_program`/`_replace_at_scoped`/`mutate`/
+      `synthesize` - the same insertion point every hand-built template
+      already occupies, not a new plumbing paradigm. The one genuinely new
+      requirement: `random_program`/`_replace_at_scoped`/`mutate` never
+      received `examples` before this - they were purely structural
+      generators, blind to the actual training data, which is exactly the
+      blindness being fixed. Threaded through as `examples`/`fuel_budget`
+      alongside the flag. `_grow`/`_leaf` themselves are untouched - this
+      mechanism only competes at the whole-node template-check level, the
+      same level the three existing templates already operate at.
+- [x] The measurement - the actual deliverable, not the mechanism alone.
+      Same leap-year budget/seeds as `test_leap_year_rule_is_reliable_
+      across_seeds` (population=300, generations=150, `allow_bool_
+      template=False` so `_bool_template` can't be doing the work):
+      **30/30 seeds verified** (widened past the committed 8-seed range to
+      also re-check seed 19 - the one genuine residual failure recorded
+      against `_bool_template` itself in the v0.20-era audit - now fixed
+      too) and **27/30 verified and generalizing** to the held-out years.
+      Total wall time for all 30 seeds: ~18s - dramatically faster than any
+      prior mechanism (each of v0.28/v0.29/v0.30's individual seeds alone
+      took 8-50+ seconds), since a successful draw often solves the target
+      in the very first generation rather than needing the full budget.
+      Zero regression to any other target (`allow_semantic_bias` only ever
+      activates when every example's `expected_output` is a genuine `bool`
+      - checked directly via `test_boolean_backprop_template_returns_none_
+      for_non_boolean_targets` - so fold/`2**n`/arithmetic targets are
+      completely unaffected).
+- [x] The 3/30 non-generalizing seeds are an honest, expected caveat, not
+      swept under the rug: e.g. seed 27 finds `(year % 2 == 0) and (not
+      (year % 100 <= 6) or year % 400 < 5)` - a coincidental century clause
+      (`year % 100 <= 6` instead of the true `year % 100 == 0`) that
+      happens to match every training century-year but misclassifies the
+      held-out 1904 - the same "verified means matched the given examples,
+      never proven correct" honesty this module's own statement (`synth.py`)
+      already makes, the same character of caveat `test_resonant_bias_can_
+      discover_fibonacci`'s seed-7 case already has on record. Blind draws
+      can still produce large (up to ~50-node), logically-valid-but-
+      overfit trees when the `and`/`or`/`not` kind draw recurses several
+      times before bottoming into atoms - population-level parsimony
+      pressure and mutation/crossover, already part of `synthesize`, are
+      what's expected to shrink these toward the true minimal shape over a
+      real run, not a claim that every single draw is already minimal.
+- [x] Net finding: this is the first of the seven general mechanisms tried
+      across v0.28-v0.31 that actually fixes the leap-year failure class,
+      confirming the diagnosis that the bottleneck was generative (blind
+      growth essentially never producing the correct shape at all) rather
+      than selective (needing better reinforcement/protection of individuals
+      already produced). Scoped honestly: this only covers boolean compound
+      targets. `2**n`/recursion's failure is the same *character* of
+      problem (a rare shape blind growth essentially never produces) but a
+      different mechanism would be needed (numeric relationship-mining over
+      the example table, e.g. discovering `y_n / y_(n-1) == 2` directly from
+      the given pairs) - not attempted this session, a clear next step.
+- [x] New tests: `test_and_or_not_target_decomposition` (direct truth-table
+      checks of the decomposition functions, independent of any search
+      run), `test_best_atom_for_target_finds_exact_match` (including the
+      don't-care-rows-are-excluded-not-treated-as-False case),
+      `test_best_atom_for_target_all_dont_care_still_returns_a_node` (the
+      bug found and fixed during this session, see above),
+      `test_grow_boolean_targeted_reconstructs_a_known_and_or3_formula`
+      (round-trip check against a *known* formula, independent of the full
+      GP search), `test_boolean_backprop_template_returns_none_for_non_
+      boolean_targets`, `test_semantic_bias_is_a_true_noop_by_default`
+      (checked directly, not inferred), `test_synth_wrapper_exposes_allow_
+      semantic_bias`, and the measured-result test `test_semantic_bias_
+      solves_leap_year_reliably_across_seeds` (asserts the 8/8-verified-
+      and-generalizing subset at the existing test's own seed range, with
+      the full 30-seed/27-generalizing sweep recorded in its docstring -
+      the same "assert a representative subset, record the full sweep"
+      convention every other reliability test in this file already uses).
+      No CLI scenario added yet - a natural next step now that this
+      mechanism has actually demonstrated the reliability the others
+      didn't.
+
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

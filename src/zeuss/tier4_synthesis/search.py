@@ -79,6 +79,7 @@ from .dsl import count_nodes, evaluate, rebuild
 from .grammar_bias import GrammarBias
 from .motif_bias import MotifArchive, context_key
 from .resonance_bias import ResonantBias
+from .semantic_bias import boolean_backprop_template
 
 _BINOPS = ("+", "-", "*", "//", "%", "==", "!=", "<", "<=", ">", ">=", "and", "or")
 _UNARYOPS = ("-", "not")
@@ -1104,6 +1105,9 @@ def random_program(
     allow_recursion_template: bool = True,
     allow_grammar_bias: bool = False,
     grammar_bias: "GrammarBias | None" = None,
+    allow_semantic_bias: bool = False,
+    examples: "list[Example] | None" = None,
+    fuel_budget: int = 60,
 ) -> Node:
     """A randomly-grown candidate program over the searchable DSL.
 
@@ -1173,6 +1177,17 @@ def random_program(
     (e.g. loaded via :func:`.grammar_bias.load_grammar_bias`) to persist
     learned structure *across* calls to :func:`synthesize` - see that
     function's docstring for the ownership rule this implies.
+
+    ``allow_semantic_bias``/``examples`` enable semantic backpropagation for
+    compound boolean targets (see :mod:`.semantic_bias`) - a materially
+    different, seventh mechanism from the six above: instead of generating
+    blind and hoping, then reinforcing/protecting whatever blind growth
+    happened to produce, it decomposes ``examples``'s actual required output
+    through AND/OR/NOT's real truth-table semantics, constructing a compound
+    shape directly from what the examples demand instead of stumbling onto
+    one. Checked last, same ``template_rate`` gate as the other three
+    templates (see ``docs/ROADMAP.md`` v0.31 for the honest measured
+    result). Default ``False``: a true no-op for every existing caller.
     """
     if allow_recursion and allow_recursion_template and template_rate > 0 and rng.random() < template_rate:
         template, _choices = _recursive_template(inputs, tuple(list_inputs), rng, bias, delta_p1)
@@ -1186,6 +1201,12 @@ def random_program(
         bool_template, _bool_choices = _bool_template(inputs, tuple(list_inputs), rng, bool_bias)
         if bool_template is not None:
             return bool_template
+    if allow_semantic_bias and examples and template_rate > 0 and rng.random() < template_rate:
+        backprop_node = boolean_backprop_template(
+            inputs, tuple(list_inputs), examples, rng, max_depth, BOOL_TEMPLATE_CATEGORIES, _build_atom_node, fuel_budget
+        )
+        if backprop_node is not None:
+            return backprop_node
     return _grow(
         list(inputs),
         tuple(list_inputs),
@@ -1256,6 +1277,9 @@ def _replace_at_scoped(
     allow_recursion_template: bool = True,
     allow_grammar_bias: bool = False,
     grammar_bias: "GrammarBias | None" = None,
+    allow_semantic_bias: bool = False,
+    examples: "list[Example] | None" = None,
+    fuel_budget: int = 60,
 ) -> Node:
     """Like :func:`_replace_at`, but regenerates the replacement using the
     (inputs, list_inputs, recur_ctx) actually valid at the target position -
@@ -1294,6 +1318,12 @@ def _replace_at_scoped(
             bool_node, _bool_choices = _bool_template(inputs, list_inputs, rng, bool_bias)
             if bool_node is not None:
                 return bool_node
+        if allow_semantic_bias and examples and template_rate > 0 and rng.random() < template_rate:
+            backprop_node = boolean_backprop_template(
+                inputs, list_inputs, examples, rng, max_depth, BOOL_TEMPLATE_CATEGORIES, _build_atom_node, fuel_budget
+            )
+            if backprop_node is not None:
+                return backprop_node
         return _grow(
             inputs,
             list_inputs,
@@ -1322,6 +1352,9 @@ def _replace_at_scoped(
         "allow_recursion_template": allow_recursion_template,
         "allow_grammar_bias": allow_grammar_bias,
         "grammar_bias": grammar_bias,
+        "allow_semantic_bias": allow_semantic_bias,
+        "examples": examples,
+        "fuel_budget": fuel_budget,
     }
 
     if isinstance(node, Let):
@@ -1408,6 +1441,9 @@ def mutate(
     allow_recursion_template: bool = True,
     allow_grammar_bias: bool = False,
     grammar_bias: "GrammarBias | None" = None,
+    allow_semantic_bias: bool = False,
+    examples: "list[Example] | None" = None,
+    fuel_budget: int = 60,
 ) -> Node:
     """Replace a randomly chosen subtree with a freshly generated one, scoped
     correctly for that position (see module docstring).
@@ -1480,6 +1516,9 @@ def mutate(
         allow_recursion_template=allow_recursion_template,
         allow_grammar_bias=allow_grammar_bias,
         grammar_bias=grammar_bias,
+        allow_semantic_bias=allow_semantic_bias,
+        examples=examples,
+        fuel_budget=fuel_budget,
     )
 
 
@@ -1565,6 +1604,7 @@ def synthesize(
     allow_grammar_bias: bool = False,
     grammar_bias: "GrammarBias | None" = None,
     allow_shape_elitism: bool = False,
+    allow_semantic_bias: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     delta_p1_start: float = 0.15,
@@ -1695,7 +1735,25 @@ def synthesize(
     which family currently scores better. Default ``False``: a true no-op
     for every existing caller, measured independently and in combination
     with the two bias mechanisms rather than assumed to help (see
-    ``docs/ROADMAP.md`` v0.30).
+    ``docs/ROADMAP.md`` v0.30). Measured result: it did not help either -
+    shape elitism alone, +motif, and +grammar all produced the identical
+    0/10 leap-year / 0-1/8 pow2 pattern every other mechanism already hit,
+    confirming the shared root cause is generative, not selective (see
+    ``allow_semantic_bias`` below).
+
+    ``allow_semantic_bias`` enables a seventh mechanism, categorically
+    different from the six above (see :mod:`.semantic_bias`): all six
+    prior mechanisms reinforce, protect, or reshuffle individuals that blind
+    top-down random growth already produced - powerless if the correct
+    shape essentially never gets generated in the first place, which is
+    exactly what was measured for leap year/``2**n`` across every one of
+    them. This one acts *at* generation time instead: it decomposes a
+    compound boolean target's actual required output through AND/OR/NOT's
+    real truth-table semantics, constructing the shape directly from what
+    the examples demand rather than hoping blind growth stumbles onto it.
+    Scoped honestly to boolean compound targets only (not recursion/fold) -
+    see ``docs/ROADMAP.md`` v0.31 for the honest measured result. Default
+    ``False``: a true no-op for every existing caller.
 
     Returns ``(best_node, beta_trace, verified)``. ``verified`` re-runs
     :func:`program_energy` on the winner one more time, post-hoc - never
@@ -1735,7 +1793,7 @@ def synthesize(
         random_program(
             inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
             allow_bool_template, bool_bias, allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-            allow_grammar_bias, grammar_bias,
+            allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
         )
         for _ in range(population_size)
     ]
@@ -1848,7 +1906,7 @@ def synthesize(
                 random_program(
                     inputs, rng, max_depth, list_inputs, template_rate, allow_recursion, bias, delta_p1, fold_bias,
                     allow_bool_template, bool_bias, allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-            allow_grammar_bias, grammar_bias,
+            allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
                 )
                 for _ in range(population_size)
             ]
@@ -2029,7 +2087,7 @@ def synthesize(
                     template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
                 )
                 next_population.append(refined)
         for fold_template_node in best_fold_template_node.values():
@@ -2046,7 +2104,7 @@ def synthesize(
                     fold_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
                 )
                 next_population.append(fold_refined)
         for bool_template_node in best_bool_template_node.values():
@@ -2063,7 +2121,7 @@ def synthesize(
                     bool_template_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
                 )
                 next_population.append(bool_refined)
         for shape_node in best_shape_node.values():
@@ -2082,7 +2140,7 @@ def synthesize(
                     shape_node, rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
                 )
                 next_population.append(shape_refined)
         while len(next_population) < population_size:
@@ -2094,7 +2152,7 @@ def synthesize(
                     population[i], rng, inputs, max_depth, list_inputs, template_rate, allow_recursion, bias,
                     delta_p1, fold_bias, allow_bool_template, bool_bias,
                     allow_fold_template, allow_motif_bias, motif_archive, allow_recursion_template,
-                    allow_grammar_bias, grammar_bias,
+                    allow_grammar_bias, grammar_bias, allow_semantic_bias, examples, fuel_budget,
                 )
             next_population.append(child)
         population = next_population

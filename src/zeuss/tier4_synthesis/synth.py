@@ -37,6 +37,7 @@ def synthesize(
     allow_grammar_bias: bool = False,
     grammar_bias: "GrammarBias | None" = None,
     allow_shape_elitism: bool = False,
+    allow_semantic_bias: bool = False,
     resonant_bias: bool = True,
     fuel_budget: int = 60,
     rng: np.random.Generator | None = None,
@@ -86,7 +87,16 @@ def synthesize(
     instead of a template's own hole-choices, built to fix a diagnosed
     shared root cause behind both bias mechanisms' failures on some targets
     (see :func:`.search.synthesize`'s docstring and ``docs/ROADMAP.md``
-    v0.30 for the honest measured comparison).
+    v0.30 for the honest measured comparison - measured to not help either).
+
+    ``allow_semantic_bias`` opts into a seventh, categorically different
+    mechanism (see :mod:`.semantic_bias`): instead of reinforcing/protecting
+    whatever blind growth already produced (all six mechanisms above), it
+    decomposes a compound boolean target's actual required output through
+    AND/OR/NOT's real truth-table semantics at generation time, constructing
+    the shape directly from what the examples demand. Scoped to boolean
+    compound targets only - see :func:`.search.synthesize`'s docstring and
+    ``docs/ROADMAP.md`` v0.31 for the honest measured result.
 
     Returns ``(best_node, beta_trace, verified)`` - see :func:`.search.synthesize`.
     """
@@ -105,6 +115,7 @@ def synthesize(
         allow_grammar_bias=allow_grammar_bias,
         grammar_bias=grammar_bias,
         allow_shape_elitism=allow_shape_elitism,
+        allow_semantic_bias=allow_semantic_bias,
         resonant_bias=resonant_bias,
         fuel_budget=fuel_budget,
         rng=rng,
