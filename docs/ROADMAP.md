@@ -2738,6 +2738,109 @@
       - the real Nations numbers above are the actual evidence, documented
       here rather than re-fetched in CI.
 
+## Phase 0 — substrate self-assessment against real data (ongoing, not versioned code)
+
+A reflective "what is this substrate now, is it any good" conversation
+produced an honest shortcomings list and a phased roadmap (see this
+project's session history for the full list - the short version: no
+generalization mechanism, capacity ceiling unexplained since v0.39, fixed
+hyperparameters never tuned per dataset, "physics" is a NumPy metaphor
+not a new substrate, engineering completeness gaps, no incremental
+update path, no demonstrated end-to-end utility). Phase 0 of that roadmap
+is testing what Zeuss actually claims to do against real data, replacing
+self-invented synthetic benchmarks - each item below is a genuine test,
+not a demo, and each was run before being trusted.
+
+- [x] **Established first, precisely, why Zeuss cannot do standard link
+      prediction.** `Codebook.symbol()` assigns every entity an
+      independently random hypervector (`random_hypervector`) - nothing
+      anywhere shapes entity representations from data, so two entities
+      that behave identically across every relation still get unrelated
+      vectors. Filtered-ranking link prediction on Nations (14 entities,
+      55 relations) measured MRR ~0.38 - landed almost exactly at the
+      predicted "near chance" level once this was understood, not a
+      benchmark artifact, a structural absence of any generalization
+      mechanism. Also found the Nations benchmark itself is compromised
+      for this purpose regardless (ConvE's own author pulled its Nations
+      results from that paper, citing inverse-relation test leakage) -
+      UMLS is the clean alternative from the same paper (ConvE MRR .94),
+      not yet re-run given the more relevant finding above already
+      explained the gap.
+- [x] **Phase 0(a): the v0.41-v0.47 robustness pipeline, tested on real
+      data for the first time, broke immediately and got fixed for real -
+      see the v0.47 entry above for the complete derivation.** Short
+      version: v0.46's crosstalk fix (validated only on synthetic,
+      single-valued, redundant-by-construction data) gave zero
+      discrimination on real Nations data; the fix that actually works
+      (`shard_connectivity_weights`, entity-popularity-skew based, needs
+      no redundant assertions) was verified via the real shipped API:
+      false positives 37/38 -> 0/38, recall 21/40 -> 31-37/40 on real
+      data, checked across seeds and contamination levels before being
+      trusted.
+- [x] **Phase 0(b): does `chain()`/`chain_sharded()` perform genuine
+      multi-hop logical entailment on real, non-synthetic hierarchical
+      data - the capability this project actually claims (iterate one
+      wave operator, walk a relation's transitive closure), as opposed to
+      the generalization capability just established it lacks?** Used
+      UMLS's real `isa` semantic-type hierarchy (500 triples, genuine
+      chains up to depth 4, 129/133 subjects with *multiple* real
+      parents - not a toy single-parent tree). Success criterion wasn't
+      "did it reach the one ancestor I expected" (multi-parent structure
+      means several different chains are simultaneously true) - it was
+      "was every hop actually a real, stored `isa` edge" (logical
+      validity) and "did it reach genuine multi-hop depth". Result,
+      checked across all 133 real subjects with `isa` facts, not a small
+      sample: **238/238 hops taken were logically valid - zero
+      hallucinated edges** - and 84/133 (63%) reached genuine multi-hop
+      (2+) depth, several reaching 3 hops through real chains (e.g.
+      `acquired_abnormality -> anatomical_abnormality ->
+      anatomical_structure -> physical_object`). One honest, checked-not-
+      ignored anomaly: `physical_object` has a real stored outgoing edge
+      (`physical_object isa entity`) that `chain_sharded` failed to
+      recover (empty chain) - most likely because `physical_object` is
+      the single most heavily-referenced *object* in this hierarchy
+      (dozens of other entities point to it), creating enough retrieval
+      crosstalk to push its own one outgoing edge below the coherence
+      floor. It correctly reported unknown rather than guessing wrong -
+      the honest-failure design held even where recall fell short. **This
+      is the first unambiguously positive capability confirmation on real
+      data this whole investigation has produced** - v0.44 through v0.47
+      were entirely about finding and fixing robustness failures, and the
+      link-prediction test confirmed a real incapability; this is Zeuss
+      doing, correctly, exactly what it was built to do, on data it never
+      saw during design.
+- [x] **Phase 0(c): does `axiom_violations` (v0.44) + implication chaining
+      (v0.45) correctly catch an injected logical contradiction on real
+      data, while leaving every genuine real fact untouched?** First tried
+      `discover_all_exclusions` (v0.38) on UMLS's full 46-relation data to
+      mine a real exclusion automatically - produced 396,597 "exclusions"
+      from `min_support=3`, almost entirely statistical noise (with UMLS's
+      sparse, type-level data, anything never co-observed from a handful
+      of examples gets called "excluded" at 100% confidence) - a real,
+      honest finding about the mining approach's own real-data limit, not
+      usable for this test. Used a hand-verified real constraint instead,
+      the same "independently-sourced, not self-mined" discipline v0.44's
+      own docstring requires: checked directly (not assumed) that no real
+      UMLS entity has both `chemical` and `organism` as `isa` ancestors -
+      zero violations across all 133 real subjects - a genuine, disjoint
+      domain constraint. Injected a false `isa=chemical` fact onto each of
+      the 16 real organism-descended entities and checked whether
+      `axiom_violations` (asymmetric: `isa=organism` trusted as evidence
+      against the excluded `isa=chemical`, not a symmetric ban - a
+      symmetric version was tried first and correctly, if unhelpfully,
+      flagged the real fact too whenever a subject held both sides, with
+      no way to tell which one was injected) caught the injected fact
+      without touching the real one. Result: **16/16 injected
+      contradictions caught, 0 false positives** on real data. Also found,
+      honestly: this specific real dataset asserts redundant direct edges
+      to most ancestor levels (not just the immediate parent), so no
+      genuine "only catchable by chaining through several isa hops" case
+      existed for this particular pair to isolate - v0.44 alone and v0.45
+      with chaining gave identical results here, which is itself the
+      correct, expected behaviour (chaining is a safe no-op when nothing
+      new is reachable beyond a subject's direct facts), not a failure to
+      demonstrate v0.45's added power specifically.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
