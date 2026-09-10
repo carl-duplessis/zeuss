@@ -2841,6 +2841,33 @@ not a demo, and each was run before being trusted.
       new is reachable beyond a subject's direct facts), not a failure to
       demonstrate v0.45's added power specifically.
 
+## Phase 1 — engineering (Phase 0 of the substrate-assessment roadmap complete; this is the follow-up)
+
+- [x] **Scaling-wall profiling: found and precisely located the real
+      bottleneck, not just confirmed "it gets slower".** A first profile
+      varying `n_per_class` (20/80/200, growing shard count and total
+      entity count together, matching how a real dataset actually grows)
+      measured per-shard-visit cost climbing sharply - 37.7ms -> 209.1ms
+      -> 836.9ms as shards went 1 -> 4 -> 10 - which looked like a
+      super-linear problem in `ask_sharded`'s own cross-shard loop.
+      Checked properly instead of trusting that reading: a second profile
+      fixed the KB entirely (1600 triples, 804 entities held constant)
+      and varied *only* `shard_size` (hence only shard count: 1, 2, 4, 8).
+      Per-shard cost stayed flat - 1920.7ms, 1810.4ms, 2013.3ms, 1704.5ms
+      - no growth trend at all across a tight band. **Conclusion:
+      `ask_sharded`'s cross-shard loop is genuinely `O(shards)`, not the
+      bottleneck.** The real cost driver is `_cleanup`'s
+      `dimensional_collapse` step, which scores the query residue against
+      *every entity in the whole codebook* on every single call,
+      regardless of how many shards that data is split across - so total
+      KB vocabulary size, not shard count, is what makes queries slower as
+      a knowledge base grows. This matters for where future optimisation
+      effort should go: sharding more aggressively doesn't fix this, and
+      a real production-scale KB (thousands-millions of entities) would
+      need `dimensional_collapse`'s own entity-comparison cost addressed
+      (e.g. an approximate/indexed nearest-neighbour prefilter before the
+      full comparison) rather than more shards.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
