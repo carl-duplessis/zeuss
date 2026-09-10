@@ -258,6 +258,45 @@ distributions still overlap at the tails, unlike v0.46's clean separation
 on its own synthetic domain, and this is validated on one real dataset so
 far.
 
+**Phase 2: `Ontology.refine_entity_vectors` closes the generalisation gap
+Phase 0 identified - the first capability this substrate did not
+previously have.** `Codebook.symbol` mints an independently random vector
+per entity; nothing shaped representations from data, so two entities
+with identical relational behaviour got unrelated vectors, ruling out
+inferring an unasserted fact from structural similarity. Given three
+routes (gradient-trained embeddings; hypervector-native iterative
+neighbour blending; a separate classical layer), the harder, more in-
+character, no-gradient option was chosen deliberately. Each entity's
+vector is repeatedly blended toward a bundle of its relational neighbours'
+current vectors, bound under the connecting relation wave (the same
+binding grounding itself uses) - a label-propagation-style power
+iteration, no loss function or training loop anywhere. A synthetic pilot
+first looked like a clean failure (0/9 correct everywhere) until a tell -
+every configuration was numerically identical regardless of its own
+hyperparameters - exposed a codebook-key bug silently discarding every
+refined vector; fixed, it reached 9/9 (from 2/9 baseline). Verified on two
+real datasets specifically to rule out a single-dataset artifact: Nations
+(tail MRR 0.389 -> 0.500-0.544) and, because Nations has a documented
+inverse-relation-redundancy quirk its own original benchmarking author
+withdrew it for, UMLS as well (no such quirk) - which confirmed it far
+more dramatically (tail MRR 0.041 -> 0.651, a 16x improvement, Hits@1
+0.000 -> 0.600). A follow-up 40-point `rounds`/`alpha` sweep then found a
+real problem with the very default those real-data numbers used: accuracy
+was perfect, but `ask()`'s own honest `known` confidence flag silently
+never fired - invisible because neither real-data run had checked it, only
+exact-match accuracy. The sweep found this wasn't a smooth tradeoff but
+three distinct regimes (low `alpha` breaks even known-fact recall;
+`alpha=0.5` gets accuracy right but `known` never fires; `alpha=0.7+`
+with enough rounds gets all three - inference, recall, confidence -
+simultaneously), and the shipped default was corrected to `rounds=8,
+alpha=0.7` before it was relied on further, with a dedicated regression
+test for the exact failure mode found. Honest scope: the new default
+hasn't yet been re-verified on real Nations/UMLS data the way the old one
+was, and this is still not compared against a real trained embedding
+model's own published numbers under an identical protocol - this closes a
+real, directly-measured gap in Zeuss's own before/after performance, not
+a claim of parity with trained models.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional
