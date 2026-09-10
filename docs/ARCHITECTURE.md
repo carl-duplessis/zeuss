@@ -258,6 +258,22 @@ distributions still overlap at the tails, unlike v0.46's clean separation
 on its own synthetic domain, and this is validated on one real dataset so
 far.
 
+**Phase 1 closes with incremental grounding: `IncrementalMemory`/
+`IncrementalShardedMemory`.** Every `ground*` method rebuilt its whole
+bundle from scratch on every call - Zeuss could only be used as a static,
+batch-compiled snapshot, never a living memory absorbing new facts over
+time. The reason a batch bundle couldn't just be appended to: `bundle()`'s
+final `normalize()` is *per-element* phase projection, not one global
+magnitude, so a new fact can't be folded into an already-normalised
+bundle - but the raw, pre-normalisation complex sum can be, trivially.
+These classes keep that raw sum as their actual state and normalise only
+on read, making `add()` `O(dim)` regardless of how many facts already
+exist. Verified numerically equivalent to the batch path at both the
+single-memory and sharded level (similarity > 0.9999999 against
+`bundle()`/`ground_sharded()`'s own output), and real-API tested through
+`ask_sharded` at the same scale `ground_sharded` itself was originally
+validated at.
+
 **Phase 2: `Ontology.refine_entity_vectors` closes the generalisation gap
 Phase 0 identified - the first capability this substrate did not
 previously have.** `Codebook.symbol` mints an independently random vector
@@ -290,12 +306,22 @@ three distinct regimes (low `alpha` breaks even known-fact recall;
 with enough rounds gets all three - inference, recall, confidence -
 simultaneously), and the shipped default was corrected to `rounds=8,
 alpha=0.7` before it was relied on further, with a dedicated regression
-test for the exact failure mode found. Honest scope: the new default
-hasn't yet been re-verified on real Nations/UMLS data the way the old one
-was, and this is still not compared against a real trained embedding
-model's own published numbers under an identical protocol - this closes a
-real, directly-measured gap in Zeuss's own before/after performance, not
-a claim of parity with trained models.
+test for the exact failure mode found. **Re-verified on real data next,
+and the fix did not transfer the way it did on the synthetic domain -
+reported plainly, not rounded up.** Nations never showed the degradation
+at either default (`known_rate` 0.925-0.940 throughout). UMLS did show a
+real drop with refinement (0.917/1.000 baseline -> 0.750/0.833) - but
+*identically* at the old and new default; switching `alpha` recovered
+none of it on real data. The default is kept at `rounds=8, alpha=0.7`
+regardless (real-data accuracy is a wash-to-slight-improvement over the
+old default), but the specific claim that it resolves the honest-
+confidence question is withdrawn - it doesn't, on real data. The same
+category of result as v0.46's crosstalk fix working on synthetic data and
+failing on real data: a synthetic finding that didn't transfer, disclosed
+rather than hidden. Also still not compared against a real trained
+embedding model's own published numbers under an identical protocol -
+this closes a real, directly-measured gap in Zeuss's own before/after
+performance, not a claim of parity with trained models.
 
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.

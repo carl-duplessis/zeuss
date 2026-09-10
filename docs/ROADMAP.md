@@ -2913,6 +2913,37 @@ not a demo, and each was run before being trusted.
       violate the project's own rule for adding one, not honour it).
       Deliberate decision, not an oversight; revisit if GPU hardware
       becomes available.
+- [x] **Incremental grounding - the last Phase 1 item, completing it.**
+      Every `ground*` method rebuilds its whole bundle from scratch on
+      every call - a real operational gap: Zeuss could only be used as a
+      static, batch-compiled snapshot, never a living memory that absorbs
+      new facts over time. Root cause `bundle()` couldn't be built around
+      before now: its final `normalize()` is *per-element* phase
+      projection (`z / abs(z)`), not one global magnitude rescaling - once
+      a vector is normalised, its true pre-normalisation magnitude at
+      each dimension is gone, so a new fact can't be cheaply folded into
+      an already-normalised bundle. The *raw*, pre-normalisation complex
+      sum can be added to trivially, though - that's exactly what
+      `bundle()` computes before its own final `normalize` call.
+      `IncrementalMemory`/`IncrementalShardedMemory` keep that raw sum as
+      their actual state, normalising only on read (`.vector`), making
+      `add()` `O(dim)` regardless of how many facts already exist,
+      instead of `O(n)` triples re-processed. `Ontology.
+      incremental_memory()`/`incremental_sharded_memory(shard_size=80)`/
+      `add_incremental(memory, s, r, o)` are the convenience API -
+      `add_incremental` adds to both `self.triples`/entities *and* the
+      memory structure in one call. Verified, not assumed, to be
+      numerically equivalent to the batch path at every scale checked:
+      single-memory and sharded incremental results match
+      `bundle()`/`ground_sharded()`'s batch output to float64 tolerance
+      (similarity > 0.9999999), and the sharded case is real-API tested
+      through `ask_sharded` at the same 400-triple/100-subject scale
+      `ground_sharded` was originally validated at (>= 8/10 correct,
+      matching that original measurement). New test file
+      `test_incremental_grounding.py` (7 tests), including the
+      operational point directly, not just the algebra: query a memory,
+      add a fact, query again, without ever calling `ground()` a second
+      time - the new fact is there.
 
 ## Phase 2 — closing the generalisation gap (`Ontology.refine_entity_vectors`)
 
@@ -3020,10 +3051,30 @@ in-character, less-certain option.
         this region with margin, and a dedicated regression test
         (`test_refine_entity_vectors_default_preserves_honest_
         confidence`) added specifically for the failure mode just found.
-      - **Not yet done**: re-verifying the new default on real Nations/
-        UMLS data (checking `known` there too, not just accuracy) - the
-        real-data numbers above predate the sweep and used the old
-        default. A real, disclosed gap, not swept under the rug.
+- [x] **Re-verified on real data - and the sweep's fix did NOT transfer
+      the way it did on the synthetic domain, reported honestly rather
+      than rounded up.** Checked `known_rate` on both real datasets at
+      baseline, the old default, and the new default:
+      - **Nations**: `known_rate` was never degraded at either default -
+        baseline 0.925/0.915, old 0.940/0.925, new 0.925/0.915
+        (tail/head). Nothing here for the new default to fix.
+      - **UMLS**: `known_rate` genuinely drops with refinement (baseline
+        0.917/1.000 -> 0.750/0.833) - but **identically** at the old
+        and new default. Switching `alpha` 0.5 -> 0.7 recovered none of
+        it on real data, unlike the clean 0.00 -> 1.00 jump the
+        synthetic sweep found. Real, but smaller than the synthetic
+        domain's total collapse, and not controlled by this
+        hyperparameter choice on real data - something about
+        refinement's general effect at UMLS's scale/density, not
+        something `alpha`/`rounds` fixes within the range tested.
+      - Default kept at `rounds=8, alpha=0.7` anyway - real-data accuracy
+        is a wash-to-slight-improvement over the old default (UMLS head
+        MRR 0.440 -> 0.564; tail and Nations roughly tied) - but the
+        specific claim that this default *resolves* the honest-
+        confidence question is withdrawn; it doesn't, on real data. The
+        same category of finding as v0.46's crosstalk fix working on
+        synthetic data and failing on real data - a synthetic result
+        that didn't transfer, disclosed rather than hidden.
 - [x] **Honest scope, stated plainly, not left implicit:** this changes
       entity *initialisation* only; Phase 1's scaling-wall finding
       (query latency driven by total codebook size, not shard count) is

@@ -35,7 +35,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from ..tier2_substrate.hypervectors import Codebook, bind, bundle, permute, unbind
+from ..backend import CDTYPE, xp
+from ..tier2_substrate.hypervectors import Codebook, bind, bundle, normalize, permute, unbind
 
 # Fixed cyclic shift applied to the object slot - see module docstring for why
 # this is load-bearing (breaks a commutative-bind collision on chained entities).
@@ -639,6 +640,91 @@ def shard_connectivity_weights(shards_of_triples: list, inverse_temperature: flo
     return [1.0 / (1.0 + math.exp(-inverse_temperature * ((s - mean) / std))) for s in scores]
 
 
+@dataclass
+class IncrementalMemory:
+    """Phase 1: an O(1)-per-fact incremental counterpart to
+    :func:`~zeuss.tier2_substrate.hypervectors.bundle` - every `ground*`
+    method on `Ontology` rebuilds its whole bundle from scratch on every
+    call, with no way to cheaply add one new fact to an existing large
+    knowledge base.
+
+    **Why a batch bundle can't just be appended to.**
+    :func:`~zeuss.tier2_substrate.hypervectors.normalize` (what `bundle`
+    calls at the end) is *per-element* phase projection
+    (``z / abs(z)``), not a single global magnitude rescaling - once a
+    vector has been normalised, the true pre-normalisation magnitude at
+    each dimension is gone, so a new fact cannot be cheaply folded into
+    an *already-normalised* bundle. The raw, pre-normalisation complex
+    sum can be added to trivially, though - that's exactly what
+    `bundle([v1, ..., vn])` computes before its own final `normalize`
+    call. This class keeps that raw sum as its actual state and only
+    projects to the unit-modulus, query-ready form on demand via
+    `.vector`, so `add()` is a single elementwise complex addition
+    (`O(dim)`, not `O(n)` triples re-processed) regardless of how many
+    facts have already been added.
+
+    Verified, not assumed, to be numerically equivalent to the batch
+    path: after the same sequence of adds, `.vector` matches
+    `bundle(same_vectors)` to within floating-point tolerance (see
+    `test_incremental_grounding.py`).
+    """
+
+    dim: int
+    _raw: "xp.ndarray" = field(init=False)
+    _count: int = field(init=False, default=0)
+
+    def __post_init__(self) -> None:
+        self._raw = xp.zeros(self.dim, dtype=CDTYPE)
+
+    def add(self, vector, weight: float = 1.0) -> "IncrementalMemory":
+        self._raw = self._raw + weight * xp.asarray(vector, dtype=CDTYPE)
+        self._count += 1
+        return self
+
+    @property
+    def vector(self) -> "xp.ndarray":
+        """The current, normalised, query-ready hypervector - safe to
+        pass straight to `qa.ask`/`qa.chain` like any other memory."""
+        return normalize(self._raw)
+
+    def __len__(self) -> int:
+        return self._count
+
+
+@dataclass
+class IncrementalShardedMemory:
+    """The sharded counterpart to :class:`IncrementalMemory` -
+    `Ontology.ground_sharded`'s incremental analogue. New facts are
+    appended to the *newest* shard until it reaches `shard_size`, then a
+    fresh shard starts automatically; shards that are already full are
+    never re-touched by a later `add()`, unlike `ground_sharded`, which
+    rebuilds every shard from scratch on every call regardless of how
+    much of the knowledge base actually changed.
+    """
+
+    dim: int
+    shard_size: int = 80
+    _shards: list = field(init=False, default_factory=list)
+    _current_count: int = field(init=False, default=0)
+
+    def add(self, vector, weight: float = 1.0) -> "IncrementalShardedMemory":
+        if not self._shards or self._current_count >= self.shard_size:
+            self._shards.append(IncrementalMemory(dim=self.dim))
+            self._current_count = 0
+        self._shards[-1].add(vector, weight=weight)
+        self._current_count += 1
+        return self
+
+    @property
+    def memories(self) -> list:
+        """Query-ready hypervectors for every shard, positionally aligned
+        - pass straight to `qa.ask_sharded`/`qa.chain_sharded`."""
+        return [shard.vector for shard in self._shards]
+
+    def __len__(self) -> int:
+        return sum(len(shard) for shard in self._shards)
+
+
 try:
     import networkx as nx
 
@@ -792,12 +878,37 @@ class Ontology:
           *together*, no tradeoff. `rounds=8, alpha=0.7` (this method's
           actual default) sits inside that safe region with margin.
 
-        This default has *not* yet been re-verified against real Nations/
-        UMLS data the way `rounds=3, alpha=0.5` was above - the real-data
-        numbers in this docstring predate the sweep and used the old
-        default. Re-confirming the new default holds on real data (and
-        checking `known` there too, not just accuracy) is the natural
-        next step, not yet done.
+        **Re-verified on real data next, and the sweep's fix did NOT
+        transfer the way it did on the synthetic domain - reported
+        honestly, not rounded up.** Checked `known_rate` on both real
+        datasets at baseline, the *old* default, and the *new* default:
+
+        - Nations: `known_rate` was never degraded at either default in
+          the first place (baseline 0.925/0.915, old 0.940/0.925, new
+          0.925/0.915, tail/head) - nothing here for the new default to
+          fix.
+        - UMLS: `known_rate` genuinely drops with refinement (baseline
+          0.917/1.000 -> 0.750/0.833) - but **identically** at the old
+          and new default. Switching `alpha` from 0.5 to 0.7 did not
+          recover any of it on real data, unlike the clean 0.00 -> 1.00
+          jump the synthetic sweep found. The drop is real but far
+          smaller than the synthetic domain's total collapse to zero,
+          and appears not to be controlled by this hyperparameter choice
+          on real data at all - something about refinement's general
+          effect at UMLS's scale/density, not something `alpha`/`rounds`
+          within the range tested fixes.
+
+        The default is kept at `rounds=8, alpha=0.7` anyway - real-data
+        accuracy is a wash-to-slight-improvement over the old default
+        (UMLS head MRR 0.440 -> 0.564; tail and Nations roughly tied),
+        so there's no reason to prefer the old one - but the specific
+        claim that this default *resolves* the honest-confidence
+        question is withdrawn. It doesn't, on real data. This is a
+        genuine, disclosed case of a synthetic-domain finding not
+        transferring, the same category of result this project has
+        found and reported honestly before (v0.46's crosstalk fix
+        working on synthetic data and failing on real data is the
+        closest precedent) - not swept under the rug here either.
 
         **Honest scope, not yet resolved:** this changes entity
         *initialisation*, not retrieval cost - Phase 1's scaling-wall
@@ -845,6 +956,36 @@ class Ontology:
         if not self.triples:
             raise ValueError("ontology is empty; add() some triples first")
         return bundle([self._triple_vector(*t) for t in self.triples])
+
+    def incremental_memory(self) -> IncrementalMemory:
+        """A fresh, empty :class:`IncrementalMemory` sized for this
+        ontology's `dim` - the starting point for building up a memory
+        one fact at a time via :meth:`add_incremental`, instead of
+        collecting every triple first and calling `ground()` once."""
+        return IncrementalMemory(dim=self.dim)
+
+    def incremental_sharded_memory(self, shard_size: int = 80) -> IncrementalShardedMemory:
+        """A fresh, empty :class:`IncrementalShardedMemory` - the
+        incremental counterpart to :meth:`ground_sharded`. ``shard_size``
+        matches `ground_sharded`'s own default (80) - the size v0.39
+        measured single-bundle recall to stay reliable at."""
+        return IncrementalShardedMemory(dim=self.dim, shard_size=shard_size)
+
+    def add_incremental(
+        self, memory: "IncrementalMemory | IncrementalShardedMemory", subject: str, relation: str, obj: str
+    ) -> "IncrementalMemory | IncrementalShardedMemory":
+        """Add one fact to both ``self.triples``/entities/relations *and*
+        an incremental memory structure, in `O(dim)` amortised time -
+        unlike `ground()`/`ground_shards()`/`ground_sharded()`, which
+        rebuild every shard from scratch regardless of how much of the
+        knowledge base actually changed. Accepts either
+        :class:`IncrementalMemory` or :class:`IncrementalShardedMemory`
+        (both expose the same ``add(vector)`` shape) and returns it back
+        for chaining, matching :meth:`add`'s own return-self convention.
+        """
+        self.add(subject, relation, obj)
+        memory.add(self._triple_vector(subject, relation, obj))
+        return memory
 
     def ground_sharded(self, shard_size: int = 80, skip_irregular: bool = True) -> list:
         """Bundle triples into several independent memory hypervectors
