@@ -406,6 +406,7 @@ def chain_sharded(
     max_hops: int = 6,
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
+    shard_weights: list[float] | None = None,
 ) -> Chain:
     """`chain`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`/`ask_sharded`) instead of one - at *every*
@@ -425,9 +426,27 @@ def chain_sharded(
     v0.41's caveat on `ask_sharded` applies here too, at every hop: this is
     safe when every shard carries real, structured data, not when shards
     may carry arbitrary/unstructured content.
+
+    ``shard_weights`` (Phase 1, optional, positionally aligned with
+    ``memories``): the same continuous per-shard trust weight
+    `ask_sharded` accepts - see `ontology.shard_connectivity_weights`
+    (real data) or `shard_regularity_weights` (the synthetic, single-
+    valued domain it was validated on). Applied identically at *every*
+    hop, not just the first: `coherence * weight` decides both which
+    shard's answer wins that hop's argmax and whether the hop clears
+    `COHERENCE_FLOOR`, so a noise shard's occasional lucky resonance is
+    damped at each step of the chain, the same mechanism `ask_sharded`
+    already uses for a single hop - not yet independently measured for
+    the *multi-hop* case the way `ask_sharded`'s own weighting was (see
+    `docs/ROADMAP.md`'s Phase 1 entry); treat this as bringing the same
+    mechanism to `chain_sharded`, not as a separately-validated result.
+    ``None`` (default) is an exact no-op, equivalent to every weight
+    being ``1.0``.
     """
     if not memories:
         raise ValueError("chain_sharded requires at least one memory - see Ontology.ground_sharded")
+    if shard_weights is not None and len(shard_weights) != len(memories):
+        raise ValueError("shard_weights must be the same length as memories")
     ent = onto.entity(subject)
     visited = {subject}
     hops: list[tuple[str, float]] = []
@@ -436,16 +455,18 @@ def chain_sharded(
     winning_memory = memories[0]
     for _ in range(max_hops):
         best = None
-        for memory in memories:
+        for i, memory in enumerate(memories):
             residue = onto.step(memory, ent, relation)
             name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta, axiom_bias)
-            if best is None or coherence > best[1]:
-                best = (name, coherence, memory)
-        name, coherence, memory = best
-        if coherence < COHERENCE_FLOOR or name in visited:
+            weight = 1.0 if shard_weights is None else shard_weights[i]
+            score = coherence * weight
+            if best is None or score > best[1]:
+                best = (name, score, memory)
+        name, score, memory = best
+        if score < COHERENCE_FLOOR or name in visited:
             break
-        running *= coherence
-        hops.append((name, coherence))
+        running *= score
+        hops.append((name, score))
         cumulative.append(running)
         visited.add(name)
         ent = onto.entity(name)  # collapse -> re-enter the continuum clean

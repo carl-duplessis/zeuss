@@ -135,6 +135,64 @@ def test_chain_sharded_requires_at_least_one_memory():
         pass
 
 
+def test_chain_sharded_shard_weights_is_a_noop_by_default():
+    """`shard_weights=None` (default) must reproduce the exact same chain
+    as calling `chain_sharded` without the parameter at all - checked
+    directly, not just assumed from the implementation."""
+    onto = Ontology(dim=8192, seed=7)
+    onto.add("socrates", "is_a", "human")
+    onto.add("human", "is_a", "mortal")
+    onto.add("mortal", "is_a", "thing")
+    shards = onto.ground_sharded(shard_size=80)
+    without_param = chain_sharded(onto, shards, "socrates", "is_a")
+    with_none = chain_sharded(onto, shards, "socrates", "is_a", shard_weights=None)
+    assert [n for n, _ in without_param.hops] == [n for n, _ in with_none.hops]
+
+
+def test_chain_sharded_shard_weights_suppresses_a_shard_at_every_hop():
+    """Phase 1: `shard_sharded` gained the same `shard_weights` mechanism
+    `ask_sharded` has had since v0.46 - this checks it actually changes
+    the outcome, not just that it accepts the parameter. Two shards each
+    carry a complete, internally consistent but mutually exclusive two-hop
+    chain for the same starting subject (`socrates is_a human is_a
+    mortal` vs `socrates is_a martian is_a alien`) - both are equally
+    "real" structured data, so without weighting the winner at each hop
+    is decided by whichever shard's raw resonance happens to be strongest
+    (not asserted here, since that's not the point being tested). Setting
+    `shard_weights` to heavily suppress one shard must force the *entire*
+    chain to come from the other one - at both hops, not just the first,
+    directly verifying the "applied at every hop" claim in this
+    parameter's own docstring rather than trusting it un-checked."""
+    onto = Ontology(dim=8192, seed=3)
+    onto.add("socrates", "is_a", "human")
+    onto.add("human", "is_a", "mortal")
+    shard_a = list(onto.triples)
+
+    onto.add("socrates", "is_a", "martian")
+    onto.add("martian", "is_a", "alien")
+    shard_b = onto.triples[len(shard_a) :]
+
+    shards = [shard_a, shard_b]
+    memories = onto.ground_shards(shards, skip_irregular=False)
+
+    suppress_a = chain_sharded(onto, memories, "socrates", "is_a", shard_weights=[0.0, 1.0])
+    assert [n for n, _ in suppress_a.hops] == ["martian", "alien"]
+
+    suppress_b = chain_sharded(onto, memories, "socrates", "is_a", shard_weights=[1.0, 0.0])
+    assert [n for n, _ in suppress_b.hops] == ["human", "mortal"]
+
+
+def test_chain_sharded_shard_weights_rejects_mismatched_length():
+    onto = Ontology(dim=256, seed=0)
+    onto.add("socrates", "is_a", "human")
+    shards = onto.ground_sharded(shard_size=80)
+    try:
+        chain_sharded(onto, shards, "socrates", "is_a", shard_weights=[1.0, 1.0])
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 def _random_noise_shards(onto: Ontology, k: int, shard_size: int = 80, seed: int = 99) -> list:
     """K extra shards of random (entity, relation, entity) nonsense
     triples, reusing onto's existing vocabulary so entity_names() (and

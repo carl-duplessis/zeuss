@@ -90,10 +90,28 @@
       Requires the JAX backend; raises `RuntimeError` otherwise (mirroring
       `settle_grad`/`collapse_batch_jit`).
 
-## v0.4 — GPU kernels (Frontier 3, faster)
+## v0.4 — GPU kernels (Frontier 3, faster) — retired for now, not done
+
 - [ ] Triton `phase_interference` and `topological_collapse_step`.
 - [ ] Parity tests vs. NumPy reference; benchmark harness.
 - [ ] Optional FFT-based binding for very high dimensions.
+
+**Explicitly retired during Phase 1 of the substrate-assessment roadmap,
+stated plainly rather than left as a silently-stale open item:** this
+development environment has no CUDA GPU (see "Notes on hardware" below -
+Triton needs Linux + a CUDA GPU, this is Windows), so there is no way to
+actually implement *or parity-test* a kernel here - writing one blind,
+untested against real hardware, would violate this project's own "GPU
+implementations must match the reference within tolerance" rule
+(`CLAUDE.md`) rather than honor it. `tier1_kernels/triton_kernels.py`
+remains exactly what it was designed to be from the start - a guarded,
+optional stub (`AVAILABLE = False`, import-guarded) that the rest of the
+substrate already runs correctly without; nothing is broken or blocked
+by this being unimplemented, and every one of this session's own
+measurements (v0.39 through Phase 1) ran entirely on the NumPy path.
+Not deleted from the roadmap - genuinely worth revisiting if GPU hardware
+becomes available - just no longer an implicitly-open item nobody has
+looked at since v0.4.
 
 ## v0.5 — the logic compiler closes the loop (Frontier 2)
 - [x] Compile a `Theory` directly into a Tier-2 `Landscape` and show that
@@ -2867,6 +2885,34 @@ not a demo, and each was run before being trusted.
       need `dimensional_collapse`'s own entity-comparison cost addressed
       (e.g. an approximate/indexed nearest-neighbour prefilter before the
       full comparison) rather than more shards.
+- [x] **`chain_sharded` robustness parity**: it never got the `shard_
+      weights` mechanism `ask_sharded` gained in v0.46/v0.47 - a real,
+      previously-disclosed gap (see the roadmap's own "what's still
+      open" notes). `chain_sharded` now accepts the same `shard_weights`
+      parameter, applied identically at *every* hop of the chain (not
+      just the first): `coherence * weight` decides both which shard's
+      answer wins that hop's argmax and whether the hop clears
+      `COHERENCE_FLOOR`. `None` (default) is an exact no-op, checked
+      directly against the un-parameterised call, not assumed. Verified
+      the weighting genuinely changes outcomes, not just that it's
+      accepted: two shards carrying complete, mutually-exclusive two-hop
+      chains for the same subject (`socrates -> human -> mortal` vs
+      `socrates -> martian -> alien`) - suppressing either shard's weight
+      to `0.0` forces the *entire* resulting chain to come from the other
+      one, at both hops, not a mix. New tests in `test_sharding.py` (3
+      added). **Honest scope note**: this brings the same *mechanism*
+      `ask_sharded`'s weighting has to the multi-hop case - it has not
+      itself been independently measured for real-data robustness the
+      way `ask_sharded`'s weighting was (v0.46/v0.47's whole real-Nations-
+      data story); that would be a natural next real-data test, not yet
+      done.
+- [x] **GPU kernel: explicitly retired for now, not silently left open**
+      - see the `v0.4` entry above for the full reasoning (no CUDA
+      hardware available in this development environment, and writing a
+      kernel that can't be parity-tested against real hardware would
+      violate the project's own rule for adding one, not honour it).
+      Deliberate decision, not an oversight; revisit if GPU hardware
+      becomes available.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
