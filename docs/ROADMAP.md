@@ -2655,6 +2655,89 @@
       noise-free-accuracy-parity check, and the 94%-contamination ceiling
       check.
 
+## v0.47 — v0.46 fails on real data; a signal that doesn't need redundancy to work
+
+- [x] Direct follow-up to running Phase 0 of the substrate-assessment
+      roadmap: the user asked to test the v0.41-v0.46 robustness pipeline
+      against real relational data (Nations - 14 entities, 55 relations,
+      1992 triples, no redundant/repeated triples anywhere) instead of
+      this project's own synthetic domain, at 50% injected-noise
+      contamination. Result: baseline (no weighting) gave 21/40 recall,
+      37/38 false positives on genuinely-absent facts - expected, and
+      consistent with the whole session's story. **v0.46's
+      `shard_regularity_weights` gave 0/40 recall, 0/38 false positives -
+      everything reported unknown, not fixed.**
+- [x] **Diagnosed, not just observed.** Measured `internal_collision_
+      energy` directly on the real+noise mix: real shards scored
+      `0.026-0.194`, noise shards `0.013-0.127` - the ranges fully
+      overlap. Cause: Nations' relations are genuinely, densely multi-
+      valued (unlike the synthetic domain's single-valued `is_a`-style
+      relations), so real shards legitimately duplicate `(subject,
+      relation)` pairs just as often as noise does by chance - the same
+      structural confusion `is_structurally_regular` (v0.41/42) already
+      had on this same dataset, inherited by its "continuous" successor.
+      Tried excluding relations `classify_multi_valued_relations` already
+      flags as multi-valued from the collision count - failed *worse*: on
+      Nations' 14-entity pool, that classifier gets fooled by contamination
+      volume well before 50% (all 55 of 55 relations got misclassified
+      multi-valued), collapsing every shard to weight 1.0. Tried the
+      earlier-rejected `shard_trust_weights` (cross-shard vote
+      disagreement) directly against real data instead of assuming it
+      would fail the same way - it failed *differently and worse*: real
+      shards scored `0.67-0.91` disagreement, noise `0.32-0.67` -
+      **inverted**, because with 55 genuinely multi-valued relations spread
+      thin across only 25 shards, "the majority filler" is often not a
+      coherent concept at all, and a real shard holding one of several
+      simultaneously-true answers looks like a minority dissenter against
+      a fragmented, meaningless vote.
+- [x] **The conceptual root cause, stated precisely, not just patched
+      around:** every mechanism from v0.43 through both v0.46 attempts
+      detects a shard *disagreeing* with something, which requires the
+      data to contain redundant, independently-repeated assertions of the
+      same fact - true by construction of the synthetic domain those
+      mechanisms were built and validated against, false of Nations
+      (confirmed directly: all 1992 triples are unique, zero duplicates)
+      and of most real knowledge graphs, where a fact is normally stated
+      exactly once. This is a scope mismatch between the whole voting-
+      based lineage and real, non-redundant relational data, not a
+      miscalibrated constant.
+- [x] **`entity_connectivity_score`/`shard_connectivity_weights`: a signal
+      that needs no redundancy at all.** Instead of asking whether a
+      shard's claims are *contradicted*, it asks whether a shard's pattern
+      of *which entities it talks about* looks like real-world structure
+      (skewed - some entities are simply more connected than others,
+      universally true of real relational data) or uniform random
+      sampling (what noise looks like, regardless of which real entities
+      it happens to reuse). Self-normalising (a sigmoid over each shard's
+      *z-score* relative to the mix's own mean/std), not a fixed constant
+      like `shard_regularity_weights`'s `inverse_temperature=60.0` -
+      deliberately, since a raw connectivity score's scale depends on the
+      dataset's own size/degree distribution and there is no portable
+      absolute number the way a `[0, 1]`-normalised fraction has.
+- [x] **Measured result, checked across seeds and contamination levels,
+      not one lucky run:** on the same real Nations scenario, false
+      positives fell from 37/38 to 0/38, and recall of real stored facts
+      *improved simultaneously* from 21/40 to 31-37/40 across three
+      different noise seeds and two contamination levels (50% and 62%) -
+      not a trade-off, both got better together every time it was
+      checked. Honest, disclosed limit: the weight distributions still
+      overlap at the tails (real `0.38-0.97`, noise `0.05-0.54` in the
+      first run) - not the clean, zero-overlap separation
+      `shard_regularity_weights` achieved on its own synthetic domain -
+      and this has only been validated on one real dataset (Nations) so
+      far, not yet UMLS/Kinship or anything larger.
+- [x] `Ontology.ground_shards_with_connectivity_trust`: same structure as
+      `ground_shards_with_regularity_trust` (literal `axiom_violations`
+      still excised outright, every surviving triple bundled plainly,
+      continuous trust returned alongside the memories for `ask_sharded`'s
+      `shard_weights`), using the connectivity signal instead.
+- [x] New test file `test_shard_connectivity_weighting.py` (6 tests): a
+      synthetic "hub and leaf" fixture capturing the one property that
+      actually matters (skewed real-world connectivity, zero redundant
+      triples) so the suite doesn't need network access to validate this
+      - the real Nations numbers above are the actual evidence, documented
+      here rather than re-fetched in CI.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

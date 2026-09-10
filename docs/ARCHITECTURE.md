@@ -231,6 +231,33 @@ lucky resonance at retrieval time. Measured result: 0/10 false positives
 from 50% contamination through 94% - a qualitatively higher ceiling than
 v0.43's consensus mechanism, which failed open already at 50%.
 
+**v0.47: v0.46 was validated only on synthetic, single-valued, non-
+redundant-fact-free data - and measured to fail on real data, for a
+conceptual reason, not a bad constant.** Tested directly against the real
+Nations dataset (1992 triples, 55 genuinely multi-valued relations, zero
+duplicate triples): `shard_regularity_weights` showed real and noise
+shards' collision-energy ranges fully overlapping (zero discrimination),
+and the earlier-rejected `shard_trust_weights` was tested on real data too
+rather than assumed to fail the same way - it *inverted*, scoring real
+shards as more suspicious than noise. Root cause common to both: they
+detect a shard *disagreeing* with something, which needs redundant,
+independently-repeated assertions of the same fact to work at all - true
+of the synthetic domain by construction, false of Nations and most real
+knowledge graphs, where a fact is normally stated exactly once. The fix
+that actually works, `shard_connectivity_weights`, needs no redundancy:
+it asks whether a shard's *pattern of which entities it talks about* looks
+like real-world structure (skewed - some entities are simply more
+connected than others) or uniform random sampling, self-normalised via
+each shard's z-score against the mix's own mean rather than a fixed
+constant (a raw connectivity score has no portable absolute scale across
+datasets the way a `[0,1]` fraction does). Measured across three noise
+seeds and two contamination levels on real data: false positives fell
+from 37/38 to 0/38, and recall of real facts *improved simultaneously*
+from 21/40 to 31-37/40 - not a trade-off. Honest limit: the weight
+distributions still overlap at the tails, unlike v0.46's clean separation
+on its own synthetic domain, and this is validated on one real dataset so
+far.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional

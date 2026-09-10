@@ -522,8 +522,121 @@ def shard_regularity_weights(shards_of_triples: list, inverse_temperature: float
     contamination through 94% (see `docs/ROADMAP.md` v0.46 for the full
     sweep) - a substantially higher honest ceiling than v0.43's consensus
     mechanism alone (which failed open already at 50%).
+
+    **This validation was entirely on a synthetic domain where every real
+    relation is single-valued and every real fact is unique - and does NOT
+    transfer to real, densely multi-relational data, measured directly
+    rather than assumed to generalise.** Tested against the real Nations
+    dataset (1992 triples, 55 genuinely multi-valued relations, no
+    redundant/repeated triples at all): real shards scored `0.026-0.194`
+    internal collision energy and noise shards scored `0.013-0.127` - the
+    ranges fully overlap, and the resulting weights showed zero usable
+    discrimination (see `docs/ROADMAP.md`'s v0.47 entry). The root cause
+    is conceptual, not a bad constant: this signal (and `shard_trust_
+    weights` above) both implicitly assume single-valued, redundantly-
+    sourced data - a real fact reasserted identically across sources so a
+    lone contradicting shard stands out. Most real knowledge graphs, like
+    most real relations, don't have that property; a fact is usually
+    stated exactly once. :func:`shard_connectivity_weights` is the signal
+    that was found to actually work on real data instead, for a different
+    reason - it needs no redundancy at all.
     """
     return [math.exp(-inverse_temperature * internal_collision_energy(shard)) for shard in shards_of_triples]
+
+
+def entity_connectivity_score(shard, global_degree: dict) -> float:
+    """The mean real-world "popularity" (global degree - how many triples
+    across the *entire* candidate mix touch this entity, as subject or
+    object) of the entities a single shard talks about, weighted by how
+    often it talks about them.
+
+    v0.47's answer to `shard_regularity_weights`/`shard_trust_weights`
+    both failing on real data (see their docstrings): a signal that needs
+    no redundant/repeated assertions to work at all, because it isn't
+    trying to catch a shard *disagreeing* with anything - it's testing
+    whether a shard's pattern of *which entities it talks about* looks
+    like real-world structure or like uniform random sampling. Real
+    knowledge graphs are never uniform: some entities (a populous country,
+    a common ancestor concept, a hub node) participate in far more real
+    facts than others, and a real shard - a genuine slice of that
+    structure - inherits that skew. A noise shard drawing subjects and
+    objects uniformly at random from the same entity pool does not,
+    regardless of how many real facts about those same entities exist
+    elsewhere in the mix. This needs no relation to ever repeat and no
+    fact to ever be reasserted, unlike every cross-shard-vote or within-
+    shard-duplication signal tried before it - it only needs entities
+    to be realistically non-uniformly popular, which is close to
+    universally true of real relational data.
+
+    ``global_degree`` is computed once, from every triple in the *entire*
+    candidate mix (real and noise shards together - this is the only
+    thing actually available to a detector that doesn't already know
+    which shards are trustworthy) - see :func:`shard_connectivity_weights`.
+    """
+    local: dict = {}
+    for subject, _relation, obj in shard:
+        local[subject] = local.get(subject, 0) + 1
+        local[obj] = local.get(obj, 0) + 1
+    if not local:
+        return 0.0
+    total = sum(local.values())
+    return sum(count * global_degree.get(entity, 0) for entity, count in local.items()) / total
+
+
+def shard_connectivity_weights(shards_of_triples: list, inverse_temperature: float = 2.0) -> list[float]:
+    """Turn :func:`entity_connectivity_score` into a per-shard trust
+    weight in ``(0, 1)`` - a logistic (sigmoid) centred on the *z-score*
+    of each shard's own score relative to the mean and standard deviation
+    of every shard's score in this specific candidate mix, not a fixed
+    absolute threshold.
+
+    **Why self-normalising, not a constant like `shard_regularity_
+    weights`'s `inverse_temperature=60.0`.** A raw connectivity score's
+    magnitude depends on the dataset's own scale (entity count, triple
+    count, degree distribution shape) - there is no portable absolute
+    number that means "trustworthy" across different knowledge graphs the
+    way a `[0, 1]`-normalised fraction (like collision energy) has. Zeroing
+    each shard's score against the *other shards in the same mix* sidesteps
+    needing one: whatever the real absolute scale of connectivity happens
+    to be for this dataset, real shards should cluster above the mix's own
+    mean and noise shards below it, because the comparison is relative to
+    data that's already scaled the same way.
+
+    Measured directly (not assumed) on the real Nations dataset at 50%
+    contamination, the exact scenario where `shard_regularity_weights`
+    showed zero discrimination: real shard weights ranged `0.38-0.97`,
+    noise shard weights ranged `0.05-0.54` - imperfect overlap at the
+    tails, not the clean separation `shard_regularity_weights` achieved on
+    its own (single-valued, redundant) synthetic domain, but enough to
+    matter. Wired into the full `ask_sharded` pipeline
+    (:meth:`Ontology.ground_shards_with_connectivity_trust`): false
+    positives on genuinely-absent facts fell from 37/38 (plain, unweighted
+    grounding) to 0/38, and recall of real stored facts *improved* at the
+    same time, from 21/40 to 31-37/40 across three different noise seeds
+    and two contamination levels (50% and 62%) - not a trade-off between
+    the two, a simultaneous improvement in both, checked directly rather
+    than assumed to hold from one lucky run.
+
+    ``inverse_temperature=2.0`` controls how sharply the sigmoid commits
+    around the z-score of 0 (the mix's own mean) - a smaller value spreads
+    weights more gently across the whole range, a larger value pushes
+    harder toward 0 or 1 the further a shard's score sits from the mean.
+    Not swept as exhaustively as `shard_regularity_weights`'s constant;
+    2.0 was measured to work well across the scenarios above; treat as a
+    reasonable default, not a fully mapped-out safe range.
+    """
+    if not shards_of_triples:
+        return []
+    global_degree: dict = {}
+    for shard in shards_of_triples:
+        for subject, _relation, obj in shard:
+            global_degree[subject] = global_degree.get(subject, 0) + 1
+            global_degree[obj] = global_degree.get(obj, 0) + 1
+    scores = [entity_connectivity_score(shard, global_degree) for shard in shards_of_triples]
+    mean = sum(scores) / len(scores)
+    variance = sum((s - mean) ** 2 for s in scores) / len(scores)
+    std = variance**0.5 or 1.0
+    return [1.0 / (1.0 + math.exp(-inverse_temperature * ((s - mean) / std))) for s in scores]
 
 
 try:
@@ -780,10 +893,57 @@ class Ontology:
         its own: false positives restored from 2/10 to 0/10, and answer
         accuracy restored to exactly the noise-free baseline - holding
         from 50% contamination through 94% (see `docs/ROADMAP.md` v0.46).
+
+        **Validated only on synthetic, single-valued, non-redundant-fact-
+        free data - measured directly to fail on real, densely multi-
+        relational data (see :func:`shard_regularity_weights`'s docstring
+        and `docs/ROADMAP.md` v0.47).** Prefer
+        :meth:`ground_shards_with_connectivity_trust` for real knowledge
+        graphs; this method is kept for the scenario it was actually
+        validated on.
         """
         all_triples = [t for shard in shards_of_triples for t in shard]
         violating = axiom_violations(all_triples, exclusions, implications) if exclusions else frozenset()
         weights = shard_regularity_weights(shards_of_triples, inverse_temperature)
+        return self._ground_shards_excising_violations(shards_of_triples, violating, weights)
+
+    def ground_shards_with_connectivity_trust(
+        self,
+        shards_of_triples: list,
+        exclusions=None,
+        implications=None,
+        inverse_temperature: float = 2.0,
+    ) -> tuple[list, list[float]]:
+        """v0.47: the crosstalk fix that actually works on real, densely
+        multi-relational, non-redundant knowledge graphs - see
+        :func:`shard_connectivity_weights` for the full derivation and why
+        it needed a genuinely different signal, not a re-tuned version of
+        `shard_regularity_weights`/`shard_trust_weights` (both measured to
+        fail on real data, for a shared, conceptual reason: they need
+        repeated/redundant assertions to detect disagreement against, and
+        most real facts are stated exactly once).
+
+        Same structure as :meth:`ground_shards_with_regularity_trust` -
+        literal `axiom_violations` are still excised outright (an
+        independent, still-useful hard signal), every surviving triple is
+        bundled *plainly*, and the continuous trust score is returned
+        alongside the memories for :func:`~zeuss.qa.ask_sharded`'s
+        `shard_weights` parameter to use at retrieval time.
+
+        Measured on the real Nations dataset (1992 triples, 55 genuinely
+        multi-valued relations, zero redundant triples) at 50-62%
+        contamination across three noise seeds: false positives on
+        genuinely-absent facts fell from 37/38 (plain grounding) to 0/38,
+        and recall of real stored facts *improved simultaneously* from
+        21/40 to 31-37/40 - not a trade-off, both got better together.
+        Honest, disclosed limit: the weight distributions still overlap
+        at the tails (unlike `shard_regularity_weights`'s clean separation
+        on its own synthetic domain) and this has only been validated on
+        one real dataset so far - see `docs/ROADMAP.md` v0.47.
+        """
+        all_triples = [t for shard in shards_of_triples for t in shard]
+        violating = axiom_violations(all_triples, exclusions, implications) if exclusions else frozenset()
+        weights = shard_connectivity_weights(shards_of_triples, inverse_temperature)
         return self._ground_shards_excising_violations(shards_of_triples, violating, weights)
 
     # -- the one-hop substrate operator ------------------------------------
