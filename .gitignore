@@ -23,6 +23,7 @@ runs/
 checkpoints/
 *.png
 !docs/**/*.png
+scratch_*/
 
 # OS / editor
 .DS_Store
