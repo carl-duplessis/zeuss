@@ -3196,6 +3196,78 @@ in-character, less-certain option.
       own before/after numbers, not a claim of parity with trained
       embedding models.
 
+## Phase 2 addendum — v0.39's dim-ceiling question, finally explained
+
+- [x] **v0.39 measured that raising `dim` 8x (8192->65536) barely moved
+      coherence on a 400-triple single bundle (0.044->0.039, if anything
+      slightly worse) and left *why* as an explicitly open question.
+      Traced to the mechanism, not left unexplained any longer.** `bind`/
+      `bundle`'s shared `normalize()` step forces every *element* of a
+      summed vector back onto the unit circle - a phase-only projection
+      that `unbind()` re-applies to whatever it reads out of a bundle.
+      Isolated at the `bind`/`bundle`/`unbind` primitive level (no
+      `Ontology`/`qa` involved - N bound `(role, filler)` pairs bundled
+      into one memory, then unbound by one target role and correlated
+      against the true filler, 8 seeds per cell): the *shipped* pipeline's
+      recovered similarity for the correct filler is capped by bundle size
+      `N` alone and genuinely flat across `dim in [2048, 8192, 32768,
+      131072]` (N=400: 0.048 -> 0.045 -> 0.043 -> 0.043) - reproducing
+      v0.39's own "no improvement, if anything slightly worse" pattern
+      exactly, not just qualitatively. A pipeline built from the same
+      primitives but with the final phase projection removed (raw complex
+      sum, multiply by `conj(role)`, no re-normalisation, straight into
+      the existing `similarity()`) instead stays near its analytically-
+      predicted constant expectation of 1.0 at *every* `N` tested (up to
+      800), and - the actual capacity signature - its separation from a
+      wrong candidate's score tightens sharply as `dim` grows (N=400,
+      wrong-candidate score: 0.198 at dim=2048 -> 0.003 at dim=131072).
+- [x] **The mechanism, in one sentence:** forcing every dimension back to
+      unit modulus after summation is a *nonlinear* operation (dividing by
+      `|signal + noise|`, not adding noise to a clean signal), which makes
+      the *expected* recovered value a decreasing function of bundle size
+      `N` alone, with no dependence on `dim` - `dim` can only tighten an
+      empirical estimate around that already-`N`-capped expectation, never
+      lift the expectation itself. Un-projected (raw) superposition has a
+      *constant* expectation regardless of `N` (each interfering term is
+      independently mean-zero), so there `dim` does the job standard HRR
+      capacity theory predicts - reducing the *variance* around that
+      constant, and thus separating correct from wrong candidates ever
+      more reliably as `dim` grows. Both the ceiling's insensitivity to
+      `dim` *and* why that insensitivity is a direct, provable consequence
+      of one specific design choice (phase-only projection at read-out),
+      not a fundamental limit of complex-phasor HRR bundling in general,
+      are now established - one of the three candidates v0.39 itself
+      listed (`OBJ_SHIFT`, `bundle`'s normalisation, or "a genuine limit of
+      complex-phasor HRR") turned out to be the answer, and it is fixable
+      in principle, not load-bearing physics.
+- [x] **A first test of this was flawed, correctly diagnosed rather than
+      discarded as a null result.** Comparing a "lossy" `bundle()` against
+      an "amplitude-preserving" `bundle()` (global L2-rescale instead of
+      per-element), both fed through the *shipped* `unbind()`, gave
+      bit-for-bit identical numbers at every `(N, dim)` - not a bug in the
+      test, but exactly what the algebra predicts: projecting a product's
+      phase gives the same angle whether the projection happens before or
+      after the multiplication, so whichever bundle variant fed it, the
+      shipped `unbind()`'s own final projection erases the distinction
+      regardless. The loss happens at *whichever point* phase-only
+      projection is first applied to a bundle's contents, not specifically
+      inside `bundle()` - a real negative result that redirected the next
+      test rather than a dead end.
+- [x] **Deliberately not acted on further in this entry - a design
+      decision, not a quick patch.** `bind`/`unbind`/`bundle`'s
+      normalize-everywhere contract is relied on throughout the substrate
+      (every atomic hypervector is unit-modulus by construction; keeping
+      the algebra closed under that property is what makes further
+      binding/bundling composable at all). Changing `unbind`'s behaviour
+      specifically for bundle read-out (e.g. an alternate read-out that
+      skips the final projection, at the cost of an unbounded-magnitude
+      residue needing its own calibration against `COHERENCE_FLOOR`) is
+      real, substantial work with consequences for every existing
+      caller - reported here as a finding to decide on, matching this
+      project's own precedent (v0.39 itself, and Phase 2's crosstalk
+      mechanism before its fix was scoped and agreed) rather than quietly
+      started.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
