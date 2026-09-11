@@ -3323,6 +3323,66 @@ in-character, less-certain option.
       `entity_vectors` override - the minimal, directly-tested capacity
       fix, not a drop-in replacement for `ask`'s full feature set.
 
+## Phase 2 addendum, continued — does `ask_raw` obsolete sharding?
+
+- [x] **Asked directly, since v0.40's sharding exists specifically to work
+      around the exact single-bundle ceiling `ask_raw` now fixes**: at a
+      2x-v0.41-scale stress test (1600 triples, single relation, 5 shared
+      fillers), is `ask_sharded` (the shipped v0.40/41 mitigation) still
+      needed, or does raw grounding replace or combine with it? Three
+      architectures compared head-to-head on the identical KB: (A) the
+      shipped `ask_sharded` (20 shards of 80, dim=8192); (B) raw sharding
+      (2 shards of 800, dim=131072 - the exact dim/N ratio already
+      calibrated to a ~5x margin); (C) one single raw bundle, no sharding
+      at all (dim=262144, scaled to match the same margin). All three:
+      10/10 correct, 0/5 false positives on genuinely absent entities -
+      raw grounding fully preserves v0.40/41's robustness guarantee,
+      sharded or not.
+- [x] **The bigger, unexpected finding was speed, not capacity.** B and C
+      answered queries ~70-100x faster than A (B/C: ~0.5-0.8s/query; A:
+      ~48s/query), with C (no sharding at all) architecturally simplest
+      *and* marginally faster per query than B, at the cost of a longer
+      one-time grounding pass (78s vs 41s - paid once, not per query).
+- [x] **Isolated *why*, rather than crediting the whole gap to "raw beats
+      sharding" - it's both.** `ask_sharded` calls `ask()` per shard,
+      which scores every shard's candidates against the *entire*
+      ontology's ~1605-entity codebook via `_cleanup`'s `dimensional_
+      collapse`+`settle`, not narrowed to that shard's own ~85 entities -
+      a real, independent inefficiency, not inherent to sharding as an
+      idea. Reimplementing the *exact same* `dimensional_collapse`/
+      `settle` machinery but scoped to each shard's own entities dropped
+      the cost to ~3s/query (~16x) - identical accuracy and false-
+      positive rate. That leaves a real, separate ~5x gap against raw's
+      ~0.6s (scoped-old ~3s vs raw ~0.6s) attributable to `settle`'s own
+      iterative energy-refinement cost, not candidate-pool size. Both
+      effects are real and independently disclosable - the original
+      ~70-100x figure conflated an unrelated, independently-fixable
+      inefficiency with `ask_raw`'s genuine inherent advantage.
+- [x] **Fixed the independent inefficiency, additively.** `_cleanup`/
+      `_entity_codebook`/`ask` gained an optional `candidate_names`
+      parameter (`None` default = exact prior behaviour, full-ontology
+      scoring); `ask_sharded` gained `shard_entities` (positionally
+      aligned with `memories`, `None` default = exact prior behaviour).
+      `Ontology.ground_shards_with_entities`/`ground_sharded_with_
+      entities` compute each surviving shard's own entity names in the
+      *same* filtering pass as grounding, so a shard dropped for being
+      structurally irregular can never desync the two lists - a real risk
+      that would exist if entity names were computed separately against
+      the original, unfiltered shard list. `tests/test_sharded_candidate_
+      scoping.py` (5 tests) checks correctness/robustness equivalence
+      between scoped and unscoped, and the alignment guarantee
+      specifically under a dropped-shard scenario.
+- [x] **Honest scope: this fixes `ask_sharded`'s inefficiency, it doesn't
+      answer "should you use raw, sharded, or raw+sharded."** That's now
+      a real architectural choice rather than a foregone conclusion: raw
+      alone needs `dim` proportional to total KB size (a practical ceiling
+      of its own once `dim` gets impractically large); sharding (raw or
+      not) keeps `dim` bounded per shard at the cost of O(shards) query
+      work. Not measured here: where raw-alone's practical `dim` ceiling
+      actually bites, or whether raw+sharding's combination pushes total
+      capacity past what either achieves alone - both real, open follow-
+      ups, not yet started.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

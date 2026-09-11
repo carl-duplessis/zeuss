@@ -1231,6 +1231,17 @@ class Ontology:
         shards = [self.triples[i : i + shard_size] for i in range(0, len(self.triples), shard_size)]
         return self.ground_shards(shards, skip_irregular=skip_irregular)
 
+    def ground_sharded_with_entities(self, shard_size: int = 80, skip_irregular: bool = True) -> tuple:
+        """`ground_sharded`'s own default chunking, plus each surviving
+        shard's own entity names aligned 1:1 with the returned memories -
+        see `ground_shards_with_entities`'s docstring. Pass the returned
+        entity-set list straight through to `qa.ask_sharded`'s
+        ``shard_entities`` parameter."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        shards = [self.triples[i : i + shard_size] for i in range(0, len(self.triples), shard_size)]
+        return self.ground_shards_with_entities(shards, skip_irregular=skip_irregular)
+
     def ground_sharded_refined(self, shard_size: int = 80) -> list:
         """The refined-universe counterpart to `ground_sharded` - see
         `ground_refined`'s docstring for why the memory needs to be built
@@ -1274,6 +1285,32 @@ class Ontology:
                 continue
             grounded.append(bundle([self._triple_vector(*t) for t in shard]))
         return grounded
+
+    def ground_shards_with_entities(self, shards_of_triples: list, skip_irregular: bool = True) -> tuple:
+        """Like `ground_shards`, but also returns each surviving shard's
+        own entity names (every subject/object appearing in it), as a list
+        of sets aligned 1:1 with the returned memories - computed in the
+        *same* filtering pass as `ground_shards`, so a shard dropped for
+        being structurally irregular can never desync the two lists (a
+        real risk if a caller tried to compute entity names separately
+        against the original, unfiltered ``shards_of_triples``).
+
+        This alignment is exactly what `qa.ask_sharded`'s ``shard_entities``
+        parameter needs: scoring each shard's `ask` call against only its
+        own entities instead of the whole ontology's. Measured to matter a
+        lot, not just in principle - see `qa.ask_sharded`'s docstring."""
+        memories = []
+        entity_sets = []
+        for shard in shards_of_triples:
+            if skip_irregular and not is_structurally_regular(shard):
+                continue
+            memories.append(bundle([self._triple_vector(*t) for t in shard]))
+            names = set()
+            for subject, _relation, obj in shard:
+                names.add(subject)
+                names.add(obj)
+            entity_sets.append(names)
+        return memories, entity_sets
 
     def ground_resolved_shards(
         self,

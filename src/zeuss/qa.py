@@ -110,7 +110,11 @@ class Verdict:
         return "NO   (target does not resonate through this relation)"
 
 
-def _entity_codebook(onto: Ontology, entity_vectors: Callable[[str], "Any"] | None = None) -> Codebook:
+def _entity_codebook(
+    onto: Ontology,
+    entity_vectors: Callable[[str], "Any"] | None = None,
+    candidate_names: "Any" = None,
+) -> Codebook:
     """A :class:`Codebook` view scoped to just ``onto``'s entities.
 
     :func:`~zeuss.tier2_substrate.collapse.dimensional_collapse` needs a
@@ -123,10 +127,19 @@ def _entity_codebook(onto: Ontology, entity_vectors: Callable[[str], "Any"] | No
     ``entity_vectors`` (optional): looks candidates up through this instead
     of `Ontology.entity` - see `_cleanup`'s docstring for why this needs to
     stay consistent with ``subject_vector``, not just override the probe.
+
+    ``candidate_names`` (optional): restricts the codebook to exactly these
+    names instead of every entity `onto` knows about - see `_cleanup`'s
+    docstring for why this matters for `ask_sharded` specifically (each
+    shard only ever contains a fraction of the ontology's entities, so
+    scoring it against the *whole* ontology's codebook was pure wasted
+    work, not a correctness requirement). ``None`` (default) is an exact
+    no-op, identical to every prior call site.
     """
     lookup = onto.entity if entity_vectors is None else entity_vectors
+    names = onto.entity_names() if candidate_names is None else candidate_names
     cb = Codebook(dim=onto.dim)
-    cb.load({name: lookup(name) for name in onto.entity_names()})
+    cb.load({name: lookup(name) for name in names})
     return cb
 
 
@@ -136,6 +149,7 @@ def _cleanup(
     beta: float,
     axiom_bias: Callable[[str], float] | None = None,
     entity_vectors: Callable[[str], Any] | None = None,
+    candidate_names: Any = None,
 ):
     """Collapse a residue wave onto the nearest KB entity (associative read).
 
@@ -240,9 +254,20 @@ def _cleanup(
     matching the original, pre-separation design exactly. A generalising
     query needs all three consistent (``subject_vector``, ``entity_
     vectors``, and the memory itself), not just the probe.
+
+    ``candidate_names`` (optional, default every entity `onto` knows
+    about): restricts candidate scoring/settling to just these names -
+    see `_entity_codebook`'s docstring. This is what `ask_sharded` uses to
+    score each shard against only its own entities instead of the whole
+    ontology's - measured to be most of the reason `ask_sharded` was ever
+    slow at large ontology sizes in the first place (a 20-shard/1600-
+    triple/~1605-entity case: ~48s/query unscoped -> ~3s/query scoped,
+    both still through this exact `dimensional_collapse`+`settle` pass -
+    see `docs/ROADMAP.md`'s "Phase 2 addendum, continued" for the full
+    isolation). ``None`` (default) is an exact no-op.
     """
     lookup = onto.entity if entity_vectors is None else entity_vectors
-    entity_cb = _entity_codebook(onto, entity_vectors)
+    entity_cb = _entity_codebook(onto, entity_vectors, candidate_names)
     _, dim_info = dimensional_collapse(entity_cb, residue, inverse_temperature=beta)
     candidates = dim_info["live_names"]
     live_probs = dict(zip(dim_info["names"], (float(p) for p in dim_info["probs"])))
@@ -276,6 +301,7 @@ def ask(
     axiom_bias: Callable[[str], float] | None = None,
     subject_vector=None,
     entity_vectors: Callable[[str], Any] | None = None,
+    candidate_names: Any = None,
 ) -> Answer:
     """Single hop: probe ``memory`` for ``(subject, relation, ?)``.
 
@@ -298,10 +324,18 @@ def ask(
     ``subject_vector`` (to ``onto.entity_refined``), not either alone, and
     needs ``memory`` itself built from `Ontology.ground_refined`/`ground_
     sharded_refined` too for the effect to reach its measured strength.
+
+    ``candidate_names`` (optional): forwarded to `_cleanup` - restricts
+    candidate scoring to just these entities instead of every entity
+    `onto` knows about. ``None`` (default) is an exact no-op; the seam
+    `ask_sharded` uses to score each shard against only its own entities
+    (see `_cleanup`'s docstring for the measured cost of not doing this).
     """
     subject_hv = onto.entity(subject) if subject_vector is None else subject_vector
     residue = onto.step(memory, subject_hv, relation)
-    name, ranked, coherence, confidence, k_live, eff_dim = _cleanup(onto, residue, beta, axiom_bias, entity_vectors)
+    name, ranked, coherence, confidence, k_live, eff_dim = _cleanup(
+        onto, residue, beta, axiom_bias, entity_vectors, candidate_names
+    )
     return Answer(
         answer=name,
         coherence=coherence,
@@ -424,6 +458,7 @@ def ask_sharded(
     shard_weights: list[float] | None = None,
     subject_vector=None,
     entity_vectors: Callable[[str], Any] | None = None,
+    shard_entities: list | None = None,
 ) -> Answer:
     """`ask`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`) instead of one - queries every shard and
@@ -473,17 +508,37 @@ def ask_sharded(
     answer to the query's relation. Don't treat "add more shards" as safe
     in general - it's validated for shards that are genuine partitions of
     real data, not for arbitrary or adversarial content.
+
+    ``shard_entities`` (optional, positionally aligned with ``memories``):
+    each element restricts that shard's own `ask` call to just those
+    candidate names (`Ontology.ground_sharded_with_entities`/`ground_
+    shards_with_entities` build this aligned with their returned memories
+    automatically). ``None`` (default) is an exact no-op - every shard
+    scores against the whole ontology, the original behaviour. This is
+    not just an optimisation: measured directly at 1600 triples/20 shards/
+    ~1605 entities, scoring every shard against the whole ontology (the
+    unscoped default) cost ~48s/query; scoping each shard to just its own
+    ~85 entities - identical `dimensional_collapse`/`settle` machinery,
+    identical accuracy and false-positive rate - cost ~3s/query, a ~16x
+    difference that was pure wasted comparison work, not anything
+    `ask_sharded` needed to stay correct. See `docs/ROADMAP.md`'s "Phase 2
+    addendum, continued" for the full isolation (including what the
+    remaining gap against `ask_raw` actually is once this is accounted
+    for).
     """
     if not memories:
         raise ValueError("ask_sharded requires at least one memory - see Ontology.ground_sharded")
     if shard_weights is not None and len(shard_weights) != len(memories):
         raise ValueError("shard_weights must be the same length as memories")
+    if shard_entities is not None and len(shard_entities) != len(memories):
+        raise ValueError("shard_entities must be the same length as memories")
     best: Answer | None = None
     best_score = -float("inf")
     for i, memory in enumerate(memories):
         answer = ask(
             onto, memory, subject, relation, beta, axiom_bias, subject_vector=subject_vector,
             entity_vectors=entity_vectors,
+            candidate_names=None if shard_entities is None else shard_entities[i],
         )
         if shard_weights is None:
             score = answer.coherence
