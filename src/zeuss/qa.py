@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Callable
+from typing import Any, Callable
 
 from .tier2_substrate.collapse import dimensional_collapse, softmax
 from .tier2_substrate.energy import Landscape, settle
@@ -101,7 +101,7 @@ class Verdict:
         return "NO   (target does not resonate through this relation)"
 
 
-def _entity_codebook(onto: Ontology) -> Codebook:
+def _entity_codebook(onto: Ontology, entity_vectors: Callable[[str], "Any"] | None = None) -> Codebook:
     """A :class:`Codebook` view scoped to just ``onto``'s entities.
 
     :func:`~zeuss.tier2_substrate.collapse.dimensional_collapse` needs a
@@ -110,13 +110,24 @@ def _entity_codebook(onto: Ontology) -> Codebook:
     via :meth:`Codebook.load`, which restores vectors verbatim without
     touching an RNG stream - so this reuses ``onto``'s actual entity waves,
     it does not mint new ones.
+
+    ``entity_vectors`` (optional): looks candidates up through this instead
+    of `Ontology.entity` - see `_cleanup`'s docstring for why this needs to
+    stay consistent with ``subject_vector``, not just override the probe.
     """
+    lookup = onto.entity if entity_vectors is None else entity_vectors
     cb = Codebook(dim=onto.dim)
-    cb.load({name: onto.entity(name) for name in onto.entity_names()})
+    cb.load({name: lookup(name) for name in onto.entity_names()})
     return cb
 
 
-def _cleanup(onto: Ontology, residue, beta: float, axiom_bias: Callable[[str], float] | None = None):
+def _cleanup(
+    onto: Ontology,
+    residue,
+    beta: float,
+    axiom_bias: Callable[[str], float] | None = None,
+    entity_vectors: Callable[[str], Any] | None = None,
+):
     """Collapse a residue wave onto the nearest KB entity (associative read).
 
     Scores each candidate by :func:`~zeuss.tier2_substrate.resonance.
@@ -206,13 +217,28 @@ def _cleanup(onto: Ontology, residue, beta: float, axiom_bias: Callable[[str], f
     candidate wins - never ``coherence``/``confidence``, for the identical
     reason given above. Default ``None`` is a true no-op (unchanged
     `Landscape` weights), so every prior test/behavior is untouched.
+
+    ``entity_vectors`` (optional, default ``onto.entity``): looks up every
+    *candidate* through this instead. This exists for exactly one reason,
+    found the hard way (see `Ontology.refine_entity_vectors`'s docstring):
+    overriding only the probe (``subject_vector``) while candidates are
+    still scored against `Ontology.entity` measurably starves a refined-
+    vector query of most of its own effect - refined probe + raw
+    candidates against a raw memory recovered only 2/6 of a synthetic
+    domain's withheld facts, refined probe + refined candidates recovered
+    3/6, and refined probe + refined candidates + a memory *also* built
+    from refined vectors (`Ontology.ground_refined`) recovered 5/6 -
+    matching the original, pre-separation design exactly. A generalising
+    query needs all three consistent (``subject_vector``, ``entity_
+    vectors``, and the memory itself), not just the probe.
     """
-    entity_cb = _entity_codebook(onto)
+    lookup = onto.entity if entity_vectors is None else entity_vectors
+    entity_cb = _entity_codebook(onto, entity_vectors)
     _, dim_info = dimensional_collapse(entity_cb, residue, inverse_temperature=beta)
     candidates = dim_info["live_names"]
     live_probs = dict(zip(dim_info["names"], (float(p) for p in dim_info["probs"])))
 
-    scores = [phase_lock(residue, onto.entity(c)) for c in candidates]
+    scores = [phase_lock(residue, lookup(c)) for c in candidates]
     probs = softmax([beta * s for s in scores])
     order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
     ranked = [(candidates[i], float(scores[i])) for i in order]
@@ -222,11 +248,11 @@ def _cleanup(onto: Ontology, residue, beta: float, axiom_bias: Callable[[str], f
         weight = live_probs[c]
         if axiom_bias is not None:
             weight *= math.exp(-axiom_bias(c))
-        landscape.add(onto.entity(c), weight=weight)
+        landscape.add(lookup(c), weight=weight)
     z_settled, _ = settle(
         landscape, residue, steps=_CLEANUP_SETTLE_STEPS, step_size=0.3, inverse_temperature=beta
     )
-    settled_scores = [phase_lock(z_settled, onto.entity(c)) for c in candidates]
+    settled_scores = [phase_lock(z_settled, lookup(c)) for c in candidates]
     top = max(range(len(candidates)), key=lambda i: settled_scores[i])
 
     return candidates[top], ranked, float(scores[top]), float(probs[top]), dim_info["k_live"], dim_info["eff_dim"]
@@ -239,6 +265,8 @@ def ask(
     relation: str,
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
+    subject_vector=None,
+    entity_vectors: Callable[[str], Any] | None = None,
 ) -> Answer:
     """Single hop: probe ``memory`` for ``(subject, relation, ?)``.
 
@@ -246,9 +274,25 @@ def ask(
     penalty (typically built from other `ask()` calls about ``subject``)
     veto a candidate that would be logically inconsistent with an
     already-established fact. ``None`` (default) is a true no-op.
+
+    ``subject_vector`` (optional): probe with this hypervector instead of
+    ``onto.entity(subject)`` - the seam `Ontology.entity_refined` uses to
+    query with a neighbour-refined representation (see its docstring and
+    `Ontology.refine_entity_vectors`'s) without every caller needing to
+    touch the codebook directly. ``subject`` is still used for candidate
+    bookkeeping (``ranked``, ``answer``); only the probe vector changes.
+    ``None`` (default) is an exact no-op, identical to every prior call
+    site of this function.
+
+    ``entity_vectors`` (optional): forwarded to `_cleanup` - see its
+    docstring for why a generalising query needs this set *alongside*
+    ``subject_vector`` (to ``onto.entity_refined``), not either alone, and
+    needs ``memory`` itself built from `Ontology.ground_refined`/`ground_
+    sharded_refined` too for the effect to reach its measured strength.
     """
-    residue = onto.step(memory, onto.entity(subject), relation)
-    name, ranked, coherence, confidence, k_live, eff_dim = _cleanup(onto, residue, beta, axiom_bias)
+    subject_hv = onto.entity(subject) if subject_vector is None else subject_vector
+    residue = onto.step(memory, subject_hv, relation)
+    name, ranked, coherence, confidence, k_live, eff_dim = _cleanup(onto, residue, beta, axiom_bias, entity_vectors)
     return Answer(
         answer=name,
         coherence=coherence,
@@ -268,6 +312,8 @@ def ask_sharded(
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
     shard_weights: list[float] | None = None,
+    subject_vector=None,
+    entity_vectors: Callable[[str], Any] | None = None,
 ) -> Answer:
     """`ask`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`) instead of one - queries every shard and
@@ -290,6 +336,9 @@ def ask_sharded(
     shard's honest signal) instead of winning the argmax outright.
     ``None`` (default) is an exact no-op, equivalent to every weight being
     ``1.0``.
+
+    ``subject_vector``/``entity_vectors`` (optional): see `ask`'s
+    docstring - forwarded unchanged to every shard's own `ask` call.
 
     This is the real fix for `docs/ROADMAP.md` v0.39's measured ceiling: a
     single `ground()` bundle stays reliable to ~80 triples and collapses
@@ -322,7 +371,10 @@ def ask_sharded(
     best: Answer | None = None
     best_score = -float("inf")
     for i, memory in enumerate(memories):
-        answer = ask(onto, memory, subject, relation, beta, axiom_bias)
+        answer = ask(
+            onto, memory, subject, relation, beta, axiom_bias, subject_vector=subject_vector,
+            entity_vectors=entity_vectors,
+        )
         if shard_weights is None:
             score = answer.coherence
         else:

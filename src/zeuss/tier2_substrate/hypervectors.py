@@ -100,6 +100,14 @@ class Codebook:
             self._items[name] = random_hypervector(self.dim, self._rng)
         return self._items[name]
 
+    def has(self, name: str) -> bool:
+        """Whether ``name`` has already been minted/set, without the
+        lazy-mint side effect ``symbol()`` has - lets a caller offer a
+        fallback for a name that was never explicitly written (see
+        `Ontology.entity_refined`) instead of silently minting and
+        returning an unrelated random vector under that key."""
+        return name in self._items
+
     def add(self, name: str, vector) -> None:
         self._items[name] = normalize(vector)
 

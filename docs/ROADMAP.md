@@ -3075,6 +3075,87 @@ in-character, less-certain option.
         same category of finding as v0.46's crosstalk fix working on
         synthetic data and failing on real data - a synthetic result
         that didn't transfer, disclosed rather than hidden.
+- [x] **Traced the UMLS `known_rate` drop to its actual mechanism instead
+      of leaving it as an unexplained real-data gap - two plausible
+      theories were tested and both were wrong.** Not graph-density-driven
+      over-smoothing: mean pairwise entity-similarity traced round-by-round
+      on both the sparse synthetic pilot (mean degree ~10) and UMLS (mean
+      degree ~155) showed nearly identical trajectories (0.085 vs 0.096 by
+      round 8) despite a 16x degree difference, and forcing the synthetic
+      pilot through the identical sharded `ground_sharded`/`ask_sharded`
+      path UMLS uses still showed zero degradation (12/12 known either
+      way). Not `_cleanup`'s `dimensional_collapse` candidate-restriction
+      step either: on real UMLS queries, refinement *shrank* the live
+      candidate set (`k_live` 127.7 -> 85.7 of 135) rather than growing it,
+      with settle-vs-raw disagreement staying negligible (0/20 -> 2/20) -
+      the opposite of what a "bigger ambiguous set" theory needed.
+      **The actual mechanism:** `bind`/`unbind` recovery assumes atomic
+      vectors are close to independent; this method's entire purpose is to
+      correlate related entities with their neighbours, directly in
+      tension with that assumption. The aggregate crosstalk this produces
+      scales with vocabulary size (entities x relations sharing the
+      space), not per-pair correlation strength alone - exactly why the
+      tiny synthetic domain and UMLS's much larger one show similar
+      per-pair convergence while only the larger vocabulary degrades
+      retrieval. Not a mistunable hyperparameter (why the sweep above
+      couldn't fix it on real data) - a structural tension between what
+      this method needs to do and what the substrate's core algebra needs
+      to stay reliable.
+- [x] **The fix is architectural, not a threshold: separate the two uses
+      instead of trading one off against the other.** Refined vectors now
+      live in a distinct `entity_refined()` codebook namespace that
+      `entity()`/`ground()`/`ground_sharded()`/ordinary `ask()`/
+      `ask_sharded()` never read - `entity()` is provably untouched by
+      `refine_entity_vectors` now, not just measured to hold on the
+      samples checked. Generalisation becomes fully opt-in: `ground_
+      refined()`/`ground_sharded_refined()` build a memory from refined
+      vectors, and `ask`/`ask_sharded` gained `subject_vector`/
+      `entity_vectors` parameters (both `None` by default, an exact
+      no-op) to probe and score candidates the same way.
+      - A first attempt at the opt-in seam (overriding only the query's
+        probe, `subject_vector`, against an otherwise-ordinary memory)
+        was itself a real, caught mistake - it broke the existing
+        synthetic regression tests (`refined_correct` fell to 2/6, *below*
+        the 3/6 unrefined baseline). Traced rather than patched around:
+        the original design's power came from a *fully consistent*
+        refined universe, where the stored memory was also built from
+        refined vectors, not just the probe. Isolated by testing each
+        combination on the same synthetic domain: refined probe alone
+        against a raw memory recovered 2/6; adding refined candidate
+        comparisons recovered 3/6; adding a memory also built from refined
+        vectors recovered 5/6 - matching the original, pre-separation
+        numbers exactly. The real seam needs all three consistent
+        (probe, candidate scoring, memory), not any one alone.
+      - A second, easy-to-miss confound caught along the way: `Codebook.
+        symbol` mints lazily off one shared RNG stream, so pre-warming
+        only `entity()`'s own keys before refinement (rather than every
+        key `ground()` would eventually touch, in the same order) changed
+        which random vector every entity got even though refinement never
+        writes to `ENT:` - measured on real UMLS as an "ordinary" query's
+        known_rate coming back 0.950/0.975 instead of the true
+        no-refinement baseline's 0.917/1.000. Fixed by pre-minting every
+        triple's vectors in insertion order before refining.
+- [x] **Re-verified the new, separated architecture on real UMLS data -
+      not assumed to inherit the pre-separation numbers above.** Ordinary
+      queries after refinement are provably identical to a no-refinement
+      baseline by construction (`entity()` untouched) and unit-tested
+      (`test_refine_entity_vectors_does_not_touch_entity`); re-measuring
+      that on UMLS would only re-confirm the invariant at real-data cost,
+      so it wasn't repeated. The one genuinely new number is the opt-in
+      generalising path itself (`ground_refined()` memory, `subject_
+      vector`/`entity_vectors` both `entity_refined`, `rounds=8,
+      alpha=0.7`, n=30): tail MRR 0.041 (no-refinement baseline) -> 0.507,
+      Hits@1 -> 0.367, Hits@10 -> 0.733, `known_rate` 0.833 (vs baseline
+      0.917); head MRR -> 0.532, Hits@1 -> 0.333, Hits@10 -> 0.933,
+      `known_rate` 0.933 (vs baseline 1.000). The generalisation benefit
+      survives the architectural separation - and the confidence gap is
+      real but *much smaller* than the synthetic pilot's total collapse
+      (0/6 known there vs 83-93% here) - domain-size-dependent, not a
+      fixed property of the mechanism. (An earlier number quoted for this
+      path, `known_rate` 0.825/0.950, was a mislabelled leftover from the
+      pre-separation design - an ordinary query after refinement had
+      mutated `entity()` directly, not a measurement of this opt-in path -
+      corrected here and in `test_entity_refinement.py`.)
 - [x] **Honest scope, stated plainly, not left implicit:** this changes
       entity *initialisation* only; Phase 1's scaling-wall finding
       (query latency driven by total codebook size, not shard count) is

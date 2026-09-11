@@ -811,10 +811,25 @@ class Ontology:
         entity's own identity survives each round versus its neighbourhood
         signal (`bundle([current, neighbourhood], weights=[alpha, 1 -
         alpha])`); `rounds` controls how many hops of relational context
-        can reach an entity. Mutates ``self.codebook`` in place (writes
-        each refined vector back under `entity()`'s own lookup key,
-        ``f"ENT:{name}"``) - call this *before* any `ground*` method, never
-        after (grounding reads whatever the codebook holds at call time).
+        can reach an entity.
+
+        **Where the result lives (changed after the investigation below -
+        read this before calling it).** This does *not* mutate
+        `entity()`'s own lookup key (``f"ENT:{name}"``) any more. Refined
+        vectors are written to a separate codebook namespace
+        (``f"ENT_REFINED:{name}"``), read back via `entity_refined`.
+        `entity()`, `ground()`, `ground_sharded()`, and ordinary
+        `qa.ask`/`qa.ask_sharded` calls are therefore a complete no-op
+        with respect to this method now - call it whenever convenient,
+        before or after grounding, it changes nothing they see. To
+        actually query with the generalisation benefit, both the memory
+        and the query need to consistently use the refined vectors - see
+        "First attempt ... was itself a real, caught mistake" below before
+        wiring this in; the short version is `ground_refined()`/`ground_
+        sharded_refined()` plus `qa.ask(..., subject_vector=onto.
+        entity_refined(e), entity_vectors=onto.entity_refined)`, not
+        `subject_vector` alone. See "A second, deeper problem" below for
+        why this separation exists at all.
 
         **A real bug this was caught by, not by inspection - worth stating
         so it isn't repeated.** An early version wrote refined vectors
@@ -910,6 +925,91 @@ class Ontology:
         working on synthetic data and failing on real data is the
         closest precedent) - not swept under the rug here either.
 
+        **A second, deeper problem, found by tracing the UMLS drop above
+        to its actual mechanism instead of leaving it as an unexplained
+        real-data gap.** Two plausible theories were tested and both were
+        wrong, in ways worth keeping on record so they aren't re-tried:
+
+        - *Not* graph-density-driven over-smoothing. Tracing mean
+          pairwise entity-similarity round-by-round on both the sparse
+          synthetic pilot (mean degree ~10) and UMLS (mean degree ~155)
+          showed nearly *identical* trajectories (0.085 vs 0.096 by round
+          8) despite a 16x degree difference - if raw convergence speed
+          were the driver, these would differ sharply. They don't.
+          Forcing the synthetic pilot through `ground_sharded`/
+          `ask_sharded` (matching UMLS's own evaluation path exactly)
+          still showed zero degradation (12/12 known either way) -
+          density and sharding were both ruled out directly, not assumed
+          innocent.
+        - *Not* `_cleanup`'s `dimensional_collapse` candidate-restriction
+          step either. If a bigger "live" candidate set were letting
+          `settle` disagree with the raw residue's own top match, `k_live`
+          should grow and disagreements should climb under refinement.
+          Measured on real UMLS queries: baseline `k_live` was already
+          127.7/135 (barely restricted at all), refined *shrank* it to
+          85.7, and settle-vs-raw disagreement stayed negligible (0/20 ->
+          2/20). Refinement narrows the candidate set, if anything - the
+          opposite of what this theory needed.
+
+        **The actual mechanism**: `bind`/`unbind` recovery assumes atomic
+        vectors are close to independent/orthogonal - that's what makes
+        unbinding clean. This method's entire purpose is to correlate
+        related entities' vectors with their neighbours, which is directly
+        in tension with that assumption: every correlated pair leaks a
+        small amount of cross-term noise into every future unbind against
+        a memory containing it. The *aggregate* noise this produces scales
+        with how many entities and relations share the vector space, not
+        just the per-pair correlation strength - which is exactly why the
+        21-entity/2-relation synthetic pilot and the 135-entity/46-relation
+        UMLS graph can show near-identical per-pair convergence while only
+        the much larger vocabulary actually degrades retrieval. This isn't
+        a mistuned hyperparameter (which is why the `alpha`/`rounds` sweep
+        above couldn't fix it on real data) - it's a structural tension
+        between what this method needs to do (correlate related entities)
+        and what the substrate's core algebra needs to stay reliable
+        (keep them independent).
+
+        **The fix is architectural, not a threshold.** Rather than choose
+        a smaller `rounds`/`alpha` that trades away the generalisation
+        benefit to protect fidelity, keep both: refined vectors now live
+        in a separate namespace (see above) that `ground()`/`ground_
+        sharded()` never read, so the memory bundle and every *ordinary*
+        query stay exactly as fidelity-preserving as if refinement had
+        never run - this is now provably true by construction (`entity()`
+        is untouched), not just measured to hold on the samples checked.
+
+        **First attempt at the opt-in generalising side was itself a real,
+        caught mistake - worth keeping on record.** Overriding only the
+        query's probe (`qa.ask`'s ``subject_vector=entity_refined(e)``)
+        against an otherwise-ordinary memory and candidate set looked like
+        the natural minimal seam - it broke the synthetic pilot's own
+        regression tests (`refined_correct` fell to 2/6, *below* the 3/6
+        unrefined baseline, and known-fact confidence fell to 7/12). Traced
+        directly rather than patched around: the original design's power
+        came from a *fully consistent* refined universe - the memory's
+        stored triples were built from refined vectors too, not just the
+        query probe, so probe and storage mutually reinforced each other.
+        Isolated by testing each combination on the same synthetic domain:
+        refined probe alone against a raw memory/candidates recovered 2/6;
+        adding refined candidate comparisons recovered 3/6; adding a
+        memory *also* built from refined vectors (not just the probe)
+        recovered 5/6 - matching the original, pre-separation numbers
+        exactly. So the real seam needs three things kept consistent, not
+        one: `qa.ask`/`qa.ask_sharded` gained a second parameter,
+        ``entity_vectors`` (overrides how *candidates* are scored, default
+        `Ontology.entity`), alongside ``subject_vector``; and grounding
+        gained `ground_refined`/`ground_sharded_refined`, the `entity_
+        refined`-built counterparts to `ground`/`ground_sharded`. A
+        generalising query is therefore: build the memory with `ground_
+        refined()`/`ground_sharded_refined()`, then call `qa.ask(onto,
+        that_memory, e, r, subject_vector=onto.entity_refined(e),
+        entity_vectors=onto.entity_refined)`. Ordinary queries keep using
+        `ground()`/`ground_sharded()` and omit both parameters - unaffected
+        either way, still provably a no-op. Real-data numbers for this
+        architecture: see `docs/ROADMAP.md`'s Phase 2 entry (checked after
+        this change shipped, not assumed to carry over from the pre-
+        separation numbers above).
+
         **Honest scope, not yet resolved:** this changes entity
         *initialisation*, not retrieval cost - Phase 1's scaling-wall
         finding (`dimensional_collapse`'s whole-codebook comparison
@@ -929,6 +1029,26 @@ class Ontology:
             neighbors[subject].append((relation, obj))
             neighbors[obj].append((relation, subject))
 
+        # Pre-mint every codebook entry ground()/ground_sharded() would touch,
+        # via the identical call path (_triple_vector), in the identical
+        # order - not just entity(), and not this method's own entity_names()
+        # -sorted order. Codebook.symbol mints lazily off ONE shared RNG
+        # stream across ENT:/ROLE:/REL: keys alike, so the exact interleaving
+        # matters, not just each entity's own relative order: an earlier
+        # version of this pre-warm only touched entity(), which changed the
+        # interleaving against ROLE:subj/ROLE:obj/REL: mints and still handed
+        # out different vectors. Without this, calling refine_entity_vectors
+        # before grounding (the normal, recommended order) would silently
+        # change which random vector every entity gets, even though this
+        # method never writes to ENT: - a real, measured confound (real UMLS
+        # known_rate for an "ordinary", override-free query came back
+        # 0.950/0.975 instead of the true no-refinement baseline's
+        # 0.917/1.000) that would have quietly broken the "provable no-op"
+        # guarantee below. The same confound class this project already
+        # caught once before, in this exact method's own Tier 0 pilot.
+        for triple in self.triples:
+            self._triple_vector(*triple)
+
         current = {e: self.entity(e) for e in entities}
         for _ in range(rounds):
             nxt = {}
@@ -943,19 +1063,63 @@ class Ontology:
             current = nxt
 
         for e in entities:
-            self.codebook.add(f"ENT:{e}", current[e])
+            self.codebook.add(f"ENT_REFINED:{e}", current[e])
         return self
+
+    def entity_refined(self, name: str):
+        """The neighbour-refined vector for ``name`` (see
+        `refine_entity_vectors`) if refinement has been run and covered it;
+        otherwise the same as `entity(name)` - a safe, honest fallback, not
+        a failure, since an entity added after refinement was run (or on
+        an ontology that never refined at all) should behave exactly like
+        an unrefined one, not raise. This is the seam that keeps the
+        refined representation out of `entity()`/`ground()`/`ground_
+        sharded()` entirely - see `refine_entity_vectors`'s docstring for
+        why that separation is load-bearing, not incidental. For a
+        generalising query, use it consistently on all three sides
+        (memory, probe, candidates), not the probe alone (measured to
+        recover only a fraction of the benefit): ground with `ground_
+        refined()`/`ground_sharded_refined()`, then ``qa.ask(onto,
+        that_memory, e, r, subject_vector=onto.entity_refined(e),
+        entity_vectors=onto.entity_refined)``."""
+        key = f"ENT_REFINED:{name}"
+        if self.codebook.has(key):
+            return self.codebook.symbol(key)
+        return self.entity(name)
 
     # -- grounding ----------------------------------------------------------
     def _triple_vector(self, subject: str, relation: str, obj: str):
         pair = bind(self.subj_wave(subject), self.obj_wave(obj))
         return bind(self.relation_wave(relation), pair)
 
+    def _triple_vector_refined(self, subject: str, relation: str, obj: str):
+        s = bind(self._role_subj, self.entity_refined(subject))
+        o = permute(bind(self._role_obj, self.entity_refined(obj)), shift=OBJ_SHIFT)
+        return bind(self.relation_wave(relation), bind(s, o))
+
     def ground(self):
         """Bundle every triple into one continuous memory hypervector."""
         if not self.triples:
             raise ValueError("ontology is empty; add() some triples first")
         return bundle([self._triple_vector(*t) for t in self.triples])
+
+    def ground_refined(self):
+        """Like `ground()`, but built from `entity_refined()` vectors
+        instead of `entity()` - the refined-universe counterpart a
+        generalising `qa.ask`/`qa.ask_sharded` call needs to reach its
+        measured full effect. See `refine_entity_vectors`'s docstring:
+        overriding only the query's probe (``subject_vector``) against a
+        memory built here from raw vectors recovered markedly less of the
+        generalisation benefit (2/6 on a synthetic pilot) than a fully
+        consistent refined query - probe, candidates (``entity_vectors``),
+        *and* memory all refined together (5/6, matching the original,
+        pre-separation design exactly). Call `refine_entity_vectors` first;
+        entities it never covered fall back to their raw vector via
+        `entity_refined`'s own fallback, same as everywhere else that
+        reads it."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        return bundle([self._triple_vector_refined(*t) for t in self.triples])
 
     def incremental_memory(self) -> IncrementalMemory:
         """A fresh, empty :class:`IncrementalMemory` sized for this
@@ -1021,6 +1185,16 @@ class Ontology:
             raise ValueError("ontology is empty; add() some triples first")
         shards = [self.triples[i : i + shard_size] for i in range(0, len(self.triples), shard_size)]
         return self.ground_shards(shards, skip_irregular=skip_irregular)
+
+    def ground_sharded_refined(self, shard_size: int = 80) -> list:
+        """The refined-universe counterpart to `ground_sharded` - see
+        `ground_refined`'s docstring for why the memory needs to be built
+        from `entity_refined()` consistently with a generalising query's
+        ``subject_vector``/``entity_vectors``, not just at the probe."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        shards = [self.triples[i : i + shard_size] for i in range(0, len(self.triples), shard_size)]
+        return [bundle([self._triple_vector_refined(*t) for t in shard]) for shard in shards]
 
     def ground_shards(self, shards_of_triples: list, skip_irregular: bool = True) -> list:
         """Ground caller-supplied candidate shards (each a list of triples)

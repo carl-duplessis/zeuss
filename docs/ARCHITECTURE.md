@@ -323,6 +323,41 @@ embedding model's own published numbers under an identical protocol -
 this closes a real, directly-measured gap in Zeuss's own before/after
 performance, not a claim of parity with trained models.
 
+**Tracing the UMLS drop to its actual mechanism found the real cause, and
+it changed the design.** Two plausible theories were tested and both were
+wrong: graph-density-driven over-smoothing predicted the sparse synthetic
+pilot (mean degree ~10) and dense UMLS (mean degree ~155) should diverge
+sharply in how fast entity vectors converge toward each other - measured
+round-by-round, their convergence trajectories were nearly identical
+(0.085 vs 0.096 by round 8), and forcing the synthetic pilot through the
+same sharded evaluation path UMLS uses still showed zero degradation.
+`_cleanup`'s `dimensional_collapse` candidate-restriction step was the
+second candidate - ruled out the same way: refinement *shrank* the live
+candidate set on real UMLS queries (127.7 -> 85.7 of 135 entities), the
+opposite of what a "bigger ambiguous set" theory needed, with settle-vs-
+raw disagreement staying negligible either way. The actual mechanism:
+`bind`/`unbind` recovery assumes atomic vectors are close to independent;
+this method's entire purpose is to correlate related entities, which is
+directly in tension with that assumption, and the aggregate crosstalk
+this produces scales with vocabulary size (entities x relations sharing
+the space) rather than per-pair correlation strength alone - exactly why
+the tiny synthetic domain and UMLS's much larger one showed similar
+per-pair convergence while only the larger vocabulary degraded retrieval.
+Not a mistunable hyperparameter, which is why the sweep above couldn't
+fix it on real data - a structural tension between what this method needs
+to do (correlate related entities) and what the substrate's core algebra
+needs to stay reliable (keep them independent). **The fix separates the
+two uses instead of trading one off against the other**: refined vectors
+now live in a separate `entity_refined()` namespace that `ground()`/
+`ground_sharded()`/ordinary `ask()`/`ask_sharded()` never read, so the
+memory and every ordinary query are provably unaffected by refinement -
+`entity()` is untouched by construction, not just measured to hold on the
+samples checked. Generalisation becomes opt-in per query: `ask`/
+`ask_sharded` gained a `subject_vector` parameter (`None` is an exact
+no-op), so a caller trades fidelity for reach only for the one query that
+wants it, against a memory that's otherwise still built entirely from
+pristine vectors.
+
 `compiler.py` provides t-norms, residuated implications, weighted `Rule`s and
 a `Theory` whose total penalty is a continuous energy over `[0,1]` valuations.
 `grounding.py` closes the loop: `compile_theory` represents each propositional
