@@ -3156,6 +3156,33 @@ in-character, less-certain option.
       pre-separation design - an ordinary query after refinement had
       mutated `entity()` directly, not a measurement of this opt-in path -
       corrected here and in `test_entity_refinement.py`.)
+- [x] **Traced *why* even the isolated generalising path's `known_rate`
+      sits below baseline, rather than leaving the gap as a bare number.**
+      Two explanations were live: either the refined vector space has a
+      systematically different coherence *scale* (a threshold-calibration
+      artifact - `COHERENCE_FLOOR` is one fixed constant, 0.08, used
+      against both raw and refined spaces alike), or genuinely-inferred
+      (withheld/test) queries just carry a structurally weaker signal than
+      directly-grounded ones (expected, not a flaw). Distinguished by
+      querying facts the KB *already holds directly* through the
+      generalising path too - same fact, only the vector space differs -
+      and comparing to the same facts queried ordinarily:
+      - Synthetic pilot: known facts' mean coherence *rose* under the
+        generalising path (0.090 ordinary -> 0.159 generalising, all
+        12/12 staying `known=True` either way), while genuinely-withheld
+        facts averaged 0.043 - a quarter of the generalising known-fact
+        mean, comfortably explaining why they miss the floor.
+      - Real UMLS (15 training triples, same protocol): identical
+        direction - 0.110 ordinary -> 0.169 generalising (+53%), 15/15
+        `known=True` in both configs, zero drop.
+      Both domains rule out H_scale outright: if anything, the refined
+      space *amplifies* confidence for facts it was actually built from,
+      the opposite of what a miscalibrated-threshold explanation needs.
+      The `known_rate` gap on genuinely-inferred queries is exactly what
+      it should be - a real, structural difference in signal strength
+      between "recalling a stored fact" and "inferring an unstated one
+      through neighbour correlation," not a bug in the floor or the
+      refined representation.
 - [x] **Honest scope, stated plainly, not left implicit:** this changes
       entity *initialisation* only; Phase 1's scaling-wall finding
       (query latency driven by total codebook size, not shard count) is

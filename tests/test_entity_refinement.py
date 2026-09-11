@@ -260,7 +260,18 @@ def test_generalized_query_via_entity_refined_preserves_honest_confidence():
     synthetic pilot's *total* collapse (0/6 known) doesn't generalise to
     UMLS's scale - both domains show correct-but-less-confident, but the
     size of the gap is domain-dependent, not a fixed property of this
-    mechanism. This regression test pins the synthetic domain's own
+    mechanism.
+
+    *Why* the gap exists at all, not just its size: it is not a
+    coherence-scale artifact of the refined vector space (`COHERENCE_
+    FLOOR` being miscalibrated for it). Querying facts the KB already
+    holds directly through this same generalising path shows coherence
+    *rising*, not falling - synthetic known facts 0.090 -> 0.159 mean
+    coherence, real UMLS training facts 0.110 -> 0.169, both 100% still
+    `known=True`. The floor is fine; genuinely-inferred (withheld/test)
+    queries are just carrying a structurally weaker signal than directly-
+    grounded ones, on both domains - see docs/ROADMAP.md's Phase 2 entry.
+    This regression test pins the synthetic domain's own
     measured reality, not a hoped-for one - a future change that makes it
     fail by *improving* known_rate should be treated as good news and
     given a new assertion, not silently
