@@ -3253,20 +3253,75 @@ in-character, less-certain option.
       projection is first applied to a bundle's contents, not specifically
       inside `bundle()` - a real negative result that redirected the next
       test rather than a dead end.
-- [x] **Deliberately not acted on further in this entry - a design
-      decision, not a quick patch.** `bind`/`unbind`/`bundle`'s
+- [x] **Not acted on immediately in the same entry as the diagnosis - a
+      design decision, not a quick patch, decided with the user before
+      touching `hypervectors.py`.** `bind`/`unbind`/`bundle`'s
       normalize-everywhere contract is relied on throughout the substrate
       (every atomic hypervector is unit-modulus by construction; keeping
       the algebra closed under that property is what makes further
-      binding/bundling composable at all). Changing `unbind`'s behaviour
-      specifically for bundle read-out (e.g. an alternate read-out that
-      skips the final projection, at the cost of an unbounded-magnitude
-      residue needing its own calibration against `COHERENCE_FLOOR`) is
-      real, substantial work with consequences for every existing
-      caller - reported here as a finding to decide on, matching this
-      project's own precedent (v0.39 itself, and Phase 2's crosstalk
-      mechanism before its fix was scoped and agreed) rather than quietly
-      started.
+      binding/bundling composable at all), so changing `unbind` itself
+      was never on the table - see the additive fix below, which changes
+      nothing about `unbind`'s existing contract or any existing caller.
+
+## Phase 2 addendum, continued — the actual capacity fix
+
+- [x] **Fully additive, not a change to any existing function.** New:
+      `hypervectors.unbind_raw` (identical to `unbind` minus the final
+      projection - a no-op difference for atomic-atomic unbinding, which
+      is why nothing existing needed to change); `Ontology.ground_raw()`
+      (returns an `IncrementalMemory` - Phase 1's existing pre-
+      normalisation accumulator turned out to be exactly the raw state
+      this fix needs, reused rather than duplicated - via its new `.raw`
+      property) and `Ontology.step_raw()` (the `step()` unbind chain,
+      three stages, with every stage using `unbind_raw`); `qa.ask_raw()`
+      (the read-out, scored via `similarity`, deliberately *not*
+      `_cleanup`'s `phase_lock`).
+- [x] **Why `similarity`, not `phase_lock` - a real, measured mistake
+      caught before shipping, not assumed correct because `_cleanup`
+      already used it.** `phase_lock` is `abs(mean(a * conj(b)))` - fine
+      at the ordinary pipeline's scale, but its expectation for a
+      genuinely wrong candidate is *positive* (Rayleigh-distributed, not
+      zero), and that bias grows with bundle size. Measured directly: an
+      entity absent from the KB entirely scored ~0.55 coherence via
+      `phase_lock` at dim=8192/N=400 - uncomfortably close to a real
+      fact's ~1.0, nearly defeating the fix's own guess-detection.
+      `similarity`'s real-part convention *is* zero-mean for a wrong
+      candidate regardless of bundle size (the property the whole
+      derivation above rests on) and was the metric actually validated in
+      the primitive-level experiment - switching to it dropped the same
+      scenario's worst-case guess to ~0.20.
+- [x] **Verified end-to-end at v0.39's own exact tested "large dim"
+      (65536), not a new, unrelated scale.** v0.39 measured that dim
+      8192->65536 (8x) barely moved coherence on a 400-triple single
+      bundle (0.044->0.039). Through the new raw pipeline at that *same*
+      dim=65536/400 triples: every sampled fact recovered correctly and
+      confidently (coherence ~0.94-1.06), a genuinely-absent entity's
+      worst-case score measured 0.198 - a 4.76x margin, the separation
+      v0.39's own pipeline never achieved at any `dim` tested.
+      `RAW_COHERENCE_FLOOR = 0.5` sits with real margin on both sides of
+      that measurement. `test_capacity_raw.py`'s
+      `test_ask_raw_rescues_the_v039_ceiling_at_v039s_own_tested_dim` is
+      the regression test for this, at the identical scale.
+- [x] **Honest, disclosed scope of the fix - checked, not assumed to hold
+      everywhere.** The margin narrows as the candidate pool grows
+      (`known` is a *max* over every entity in `onto` - an extreme-value
+      statistic, the same "more chances for noise to spike" effect
+      v0.40/v0.41 already found for shard selection, now showing up at
+      the candidate level): N=800 at the *same* dim=65536 narrows the
+      margin to 3.18x; doubling `dim` to 131072 to match the bigger
+      bundle restores it to 5.10x - textbook capacity scaling (margin ~
+      `sqrt(dim/N)`), the thing the old pipeline never showed at any
+      scale. At a much lower dim/N ratio (dim=8192/N=400, ~20x, a fifth
+      of the ratio actually validated) worst-case guesses reached ~0.60,
+      *above* the shipped default floor - `RAW_COHERENCE_FLOOR`'s default
+      is safe for the ~80x-165x dim/N ratios actually measured, not for
+      arbitrarily small ones, and `ask_raw` takes an explicit
+      `coherence_floor` override for callers operating outside that
+      range rather than silently trusting the default. `ask_raw` is also
+      scoped narrower than `ask` on purpose - no `axiom_bias`, no
+      `dimensional_collapse`/`settle` refinement pass, no
+      `entity_vectors` override - the minimal, directly-tested capacity
+      fix, not a drop-in replacement for `ask`'s full feature set.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,

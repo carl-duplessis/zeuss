@@ -16,6 +16,14 @@ Every result carries a **coherence** in [0, 1] (the amplitude of the recalled
 wave). A stored fact rings loud; crosstalk rings quiet, so unknown queries are
 flagged as guesses. Across a chain, coherence *compounds* (a product over hops),
 so a two-hop deduction is honestly reported as less certain than a one-hop one.
+
+A third function, :func:`ask_raw`, reads from a *raw* (pre-normalisation)
+memory instead (`Ontology.ground_raw`) - the fix for a long-open capacity
+question (see `docs/ROADMAP.md`'s "Phase 2 addendum"). Its `coherence` is
+on a different scale (concentrates near 1.0 for a correct answer,
+regardless of bundle size or `dim`, occasionally slightly above 1.0) and is
+compared against its own `RAW_COHERENCE_FLOOR`, not this module's `[0, 1]`
+convention above.
 """
 from __future__ import annotations
 
@@ -26,6 +34,7 @@ from typing import Any, Callable
 from .tier2_substrate.collapse import dimensional_collapse, softmax
 from .tier2_substrate.energy import Landscape, settle
 from .tier2_substrate.hypervectors import Codebook
+from .tier2_substrate.hypervectors import similarity as raw_similarity
 from .tier2_substrate.resonance import coherence as resonant_coherence
 from .tier2_substrate.resonance import interfere, phase_lock
 from .tier3_logic.ontology import Ontology
@@ -301,6 +310,107 @@ def ask(
         k_live=k_live,
         eff_dim=eff_dim,
         known=coherence >= COHERENCE_FLOOR,
+    )
+
+
+# Raw-pipeline correct-candidate coherence concentrates near a fixed
+# constant (~1.0) regardless of N/dim (see ask_raw's docstring) - this
+# floor is calibrated against that scale, not COHERENCE_FLOOR's. Measured
+# directly at dim/N ratios matching v0.39's own tested scale (all with
+# ~N+5 candidates in the codebook, since `known` is a max over all of
+# them - see ask_raw's docstring on why the margin narrows with pool
+# size): N=400/dim=65536 (v0.39's own "large dim" test point, where the
+# OLD pipeline showed zero improvement) -> known 0.94-1.06, worst-case
+# guess 0.20, a 4.76x margin; N=800/dim=65536 -> margin narrows to 3.18x
+# (same dim, bigger bundle); N=800/dim=131072 (dim doubled to match) ->
+# margin restored to 5.10x - textbook capacity scaling (margin ~
+# sqrt(dim/N)), the thing v0.39's OLD pipeline never showed at all.
+# 0.5 sits with real margin below every "known" measurement above and
+# above every "guess" measurement *at those ratios* - but at a much lower
+# dim/N ratio (dim=8192/N=400, ~20x) worst-case guesses reached ~0.60,
+# ABOVE this floor. This default is safe for dim/N ratios in roughly the
+# 80x-165x range actually measured, not for arbitrarily small ones -
+# pass a larger `coherence_floor` (or a bigger `dim`) outside that range,
+# per ask_raw's own docstring.
+RAW_COHERENCE_FLOOR = 0.5
+
+
+def ask_raw(
+    onto: Ontology,
+    memory_raw,
+    subject: str,
+    relation: str,
+    beta: float = 12.0,
+    subject_vector=None,
+    coherence_floor: float = RAW_COHERENCE_FLOOR,
+) -> Answer:
+    """Like `ask`, but reads from a *raw* (pre-normalisation) memory via
+    `Ontology.step_raw` instead of `step` - the fix for v0.39's old,
+    unexplained "raising `dim` doesn't rescue the single-bundle ceiling"
+    finding (see `Ontology.ground_raw`'s docstring and `docs/ROADMAP.md`'s
+    "Phase 2 addendum" for the full mechanism and derivation).
+
+    ``memory_raw`` must come from `Ontology.ground_raw()` (or any
+    `IncrementalMemory`'s own `.raw`), not `ground()`/`.vector` - the whole
+    point is reading the sum *before* the projection that caps capacity.
+
+    Deliberately scoped narrower than `ask`: no `axiom_bias`, no
+    `dimensional_collapse`/`settle` candidate-narrowing/energy-refinement
+    pass, no `entity_vectors` override - this is the minimal, directly-
+    tested capacity fix, not a drop-in replacement for `ask`'s full
+    feature set (nothing stops those from being layered on later; not
+    done here since neither was needed to verify the capacity claim
+    itself). Every candidate in `onto`'s codebook is scored directly via
+    :func:`~zeuss.tier2_substrate.hypervectors.similarity` against the raw
+    residue - deliberately *not* `_cleanup`'s `phase_lock` (`abs(mean(a *
+    conj(b)))`): `phase_lock` takes the magnitude of a complex mean, whose
+    expectation for a genuinely wrong candidate is *positive* (Rayleigh-
+    distributed, not zero) - fine at the ordinary pipeline's scale, but on
+    a raw residue this biases every wrong candidate's score upward by an
+    amount that itself grows with bundle size, undermining exactly the
+    separation this function exists to provide (measured directly: with
+    `phase_lock`, a genuinely-absent entity scored ~0.55 at dim=8192/
+    N=400, uncomfortably close to a real fact's ~1.0). `similarity`'s real
+    part *is* zero-mean for a wrong candidate regardless of bundle size
+    (see the derivation in `docs/ROADMAP.md`'s "Phase 2 addendum") - it's
+    the metric that was actually validated there and is the one this
+    function's whole capacity claim rests on.
+
+    Uses its own confidence floor, ``coherence_floor`` (default
+    `RAW_COHERENCE_FLOOR`) - the raw pipeline's scale is fundamentally
+    different from the ordinary path's (correct-candidate coherence
+    concentrates near a fixed constant regardless of bundle size or
+    `dim`, rather than shrinking as the bundle grows), so `COHERENCE_
+    FLOOR` (calibrated for the *other* pipeline's scale) does not apply
+    here. **Reliability still depends on `dim` being comfortably larger
+    than the bundle's triple count, and the margin narrows as the
+    candidate pool grows** (`known` picks the *max* similarity across
+    every entity in `onto` - an extreme-value statistic over however many
+    candidates that is, the same "more chances for noise to spike" effect
+    `docs/ROADMAP.md`'s v0.40/v0.41 entries already found for shard
+    selection, now showing up at the candidate level instead) - see
+    `RAW_COHERENCE_FLOOR`'s own comment for the measured margin at a few
+    `dim`/`N` ratios, and pass a caller-tuned ``coherence_floor`` for a
+    bundle/candidate-pool size outside what's been measured, rather than
+    trusting the default blindly. This is a real, disclosed requirement
+    of the fix, not a claim that any `dim` works for any bundle size.
+    """
+    subject_hv = onto.entity(subject) if subject_vector is None else subject_vector
+    residue = onto.step_raw(memory_raw, subject_hv, relation)
+    names = onto.entity_names()
+    scores = [raw_similarity(residue, onto.entity(name)) for name in names]
+    order = sorted(range(len(names)), key=lambda i: scores[i], reverse=True)
+    ranked = [(names[i], float(scores[i])) for i in order]
+    probs = softmax([beta * scores[i] for i in order])
+    top_name, top_score = ranked[0]
+    return Answer(
+        answer=top_name,
+        coherence=float(top_score),
+        confidence=float(probs[0]),
+        ranked=ranked,
+        k_live=len(names),
+        eff_dim=float(len(names)),
+        known=float(top_score) >= coherence_floor,
     )
 
 

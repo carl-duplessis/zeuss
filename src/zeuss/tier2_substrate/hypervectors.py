@@ -60,6 +60,21 @@ def unbind(a, b) -> "xp.ndarray":
     return normalize(_as_complex(a) * xp.conj(_as_complex(b)))
 
 
+def unbind_raw(a, b) -> "xp.ndarray":
+    """Like :func:`unbind`, but skips the final unit-modulus projection -
+    see `docs/ROADMAP.md`'s "Phase 2 addendum" entry for the full
+    derivation. That projection is a no-op when both operands are already
+    unit-modulus (atomic hypervectors, or anything built purely from
+    `bind`ing atomics), so this only differs from `unbind` when ``a`` is a
+    *raw, un-normalised* bundle (e.g. `Ontology.ground_raw()`/
+    `IncrementalMemory.raw`) - reading such a bundle out this way preserves
+    the per-dimension interference amplitude `normalize()` would otherwise
+    discard, which is what lets `dim` actually rescue single-bundle
+    capacity instead of only tightening an already-capped estimate (see
+    `Ontology.step_raw`)."""
+    return _as_complex(a) * xp.conj(_as_complex(b))
+
+
 def bundle(vectors: Sequence, weights: Sequence[float] | None = None) -> "xp.ndarray":
     """Superpose several hypervectors into one (all remain partly recoverable)."""
     mats = xp.stack([_as_complex(v) for v in vectors], axis=0)

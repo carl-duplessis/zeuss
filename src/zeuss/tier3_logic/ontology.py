@@ -36,7 +36,7 @@ import math
 from dataclasses import dataclass, field
 
 from ..backend import CDTYPE, xp
-from ..tier2_substrate.hypervectors import Codebook, bind, bundle, normalize, permute, unbind
+from ..tier2_substrate.hypervectors import Codebook, bind, bundle, normalize, permute, unbind, unbind_raw
 
 # Fixed cyclic shift applied to the object slot - see module docstring for why
 # this is load-bearing (breaks a commutative-bind collision on chained entities).
@@ -687,6 +687,19 @@ class IncrementalMemory:
         pass straight to `qa.ask`/`qa.chain` like any other memory."""
         return normalize(self._raw)
 
+    @property
+    def raw(self) -> "xp.ndarray":
+        """The pre-normalisation complex sum itself - pair with
+        `Ontology.step_raw`/`qa.ask_raw` instead of `.vector`/`qa.ask` to
+        recover the capacity `dim` is actually supposed to buy (see
+        `docs/ROADMAP.md`'s "Phase 2 addendum": `.vector`'s `normalize()`
+        caps single-bundle capacity as a function of triple count alone,
+        independent of `dim`). Returns a fresh copy so callers can't
+        accidentally mutate this memory's internal accumulator. (``+ 0``
+        rather than a numpy-specific ``.copy()``/``copy=True`` kwarg, so
+        this stays correct under the JAX backend too.)"""
+        return self._raw + 0
+
     def __len__(self) -> int:
         return self._count
 
@@ -1103,6 +1116,38 @@ class Ontology:
             raise ValueError("ontology is empty; add() some triples first")
         return bundle([self._triple_vector(*t) for t in self.triples])
 
+    def ground_raw(self) -> IncrementalMemory:
+        """Like `ground()`, but returns the pre-normalisation raw memory
+        (an :class:`IncrementalMemory`) instead of bundling it down to a
+        unit-modulus vector - pair with `step_raw`/`qa.ask_raw` instead of
+        `ground`/`step`/`qa.ask` to recover the capacity `dim` is actually
+        supposed to buy.
+
+        **Why this exists**: `docs/ROADMAP.md`'s "Phase 2 addendum" traced
+        v0.39's old, unexplained finding (raising `dim` 8x barely moved
+        coherence on a 400-triple single bundle) to its actual mechanism -
+        `bundle()`'s `normalize()` forces every dimension of the summed
+        vector back onto the unit circle, a *nonlinear* projection that
+        caps the *expected* recovered similarity as a function of bundle
+        size alone, independent of `dim`. Reading from the raw,
+        un-projected sum instead - which is exactly what
+        `IncrementalMemory._raw` already keeps for O(1) incremental
+        `add()` (see its own docstring) - lets `dim` do the job standard
+        HRR capacity theory predicts (verified directly at the
+        `bind`/`bundle`/`unbind` primitive level: at fixed bundle size,
+        the un-projected pipeline's correct-vs-wrong-candidate separation
+        tightens sharply as `dim` grows, while the projected pipeline
+        stays flat, reproducing v0.39's own measurement).
+
+        This is purely additive - `ground()`/`step()`/`qa.ask()` are
+        completely untouched, so nothing existing changes behaviour."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        mem = IncrementalMemory(dim=self.dim)
+        for t in self.triples:
+            mem.add(self._triple_vector(*t))
+        return mem
+
     def ground_refined(self):
         """Like `ground()`, but built from `entity_refined()` vectors
         instead of `entity()` - the refined-universe counterpart a
@@ -1416,6 +1461,29 @@ class Ontology:
         roled_obj = unbind(roled, bind(self._role_subj, ent_wave))
         unpermuted = permute(roled_obj, shift=-OBJ_SHIFT)
         return unbind(unpermuted, self._role_obj)
+
+    def step_raw(self, memory_raw, ent_wave, relation: str):
+        """Like `step`, but every unbind skips the final unit-modulus
+        projection - see `ground_raw`'s docstring for why. ``memory_raw``
+        must be the *raw* pre-normalisation sum (`ground_raw()`/
+        `IncrementalMemory.raw`), not an already-bundled/normalised
+        memory - unbinding a normalised memory this way recovers nothing
+        extra, since the loss already happened at `bundle()`'s own
+        `normalize()` (projecting a product's phase gives the same angle
+        whether the projection happens before or after the multiplication
+        - there's no getting the discarded amplitude back after the fact).
+
+        Each of the three peeled-off role/relation factors here is itself
+        an atomic (unit-modulus) wave, so using plain `bind` for
+        `bind(self._role_subj, ent_wave)` is exactly as lossless as it is
+        in `step` - the projection only ever discards anything on the
+        *first* argument to each `unbind_raw` call, which is always
+        either ``memory_raw`` itself or a raw intermediate residue
+        derived from it, never a fresh atomic pair."""
+        roled = unbind_raw(memory_raw, self.relation_wave(relation))
+        roled_obj = unbind_raw(roled, bind(self._role_subj, ent_wave))
+        unpermuted = permute(roled_obj, shift=-OBJ_SHIFT)
+        return unbind_raw(unpermuted, self._role_obj)
 
     @property
     def graph(self):
