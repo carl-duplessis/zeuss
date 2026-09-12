@@ -3383,6 +3383,66 @@ in-character, less-certain option.
       capacity past what either achieves alone - both real, open follow-
       ups, not yet started.
 
+## Phase 2 addendum, continued — raw's own memory ceiling, and combining with sharding
+
+- [x] **Where a single raw bundle's own practical ceiling bites, measured
+      directly rather than assumed.** Every entity vector gets minted once
+      and cached forever in `Ontology.codebook` (`Codebook.symbol` never
+      evicts), so memory is `O(total_entities * dim)` regardless of any
+      query-time trick - and since a fixed margin needs `dim` roughly
+      proportional to `N` (margin ~ `sqrt(dim/N)`, calibrated earlier at
+      dim/N~164 for ~5x), memory for a single bundle at constant margin is
+      `O(N^2)` - quadratic, not linear. Measured on this development
+      machine (16.9GB total, ~5GB typically available) at a deliberately
+      *less* conservative dim/N=80 ratio, just to see the trend cheaply:
+      N=400/dim=32000 -> 0.21GB; N=1000/dim=80000 -> 1.29GB; N=2000/
+      dim=160000 -> a projected 5.13GB, close enough to this machine's
+      real ceiling that the run was skipped rather than risked. Both
+      completed points recovered every fact correctly with zero false
+      positives, so the quadratic cost buys nothing extra in reliability -
+      it's pure overhead from keeping everything in one bundle.
+- [x] **Raw+sharded at the identical total N, for a direct contrast, not
+      a different scale that only sounds better.** 3200 triples (2x the
+      earlier 1600-triple sharded test) as 8 raw shards of 400
+      (dim=32768 fixed - shard size and dim don't need to grow with total
+      KB size, only shard *count* does): 1.68GB projected, 1.76GB measured
+      RSS after grounding - roughly **8x less memory than the ~13.1GB a
+      single raw bundle would need at this same N** (extrapolating thread
+      1's own measured trend). 4/4 sampled facts correct, 0/2 false
+      positives - accuracy and guess-detection both held at 2x the prior
+      sharded-raw scale. This is the direct answer to "does combining
+      raw+sharding push capacity further": yes, substantially, on memory -
+      sharding's `O(total_entities * fixed_dim)` (linear in `N`) is the
+      real reason, not something specific to this one measurement.
+- [x] **Honest wrinkle, not smoothed over: the memory win came with a real
+      query-latency cost that didn't scale the way raw FLOP-counting would
+      predict.** This 8-shard/dim=32768 configuration's per-query cost
+      (~4.5s) was *slower* than the earlier 2-shard/dim=131072 test's
+      (~0.7s), despite having *lower* predicted compute (8x405x32768 ~
+      1.06e8 candidate-dim units vs 2x805x131072 ~ 2.11e8 - almost exactly
+      half). `ask_raw` rebuilds `onto.entity_names()` and does a
+      per-candidate Python-level loop (`[raw_similarity(...) for name in
+      names]`) freshly on *every* shard's `ask_raw` call - fixed
+      per-candidate Python/dict-lookup overhead that scales with `(shards
+      x candidates)`, not raw vector-math FLOPs, and that overhead
+      dominates once per-candidate `dim` gets small enough. Real, measured,
+      not investigated further here - vectorising this comparison (scoring
+      every candidate in one batched array operation instead of a Python
+      loop per shard) is a plausible fix, genuinely separate from the
+      `ask_sharded`/`candidate_names` fix above (that fixed *how many*
+      candidates get compared; this is about *how* each comparison is
+      done) - not started.
+- [x] **Where this leaves the architecture choice, stated plainly:** raw
+      alone is simplest but memory-quadratic in `N` - fine for KBs up to
+      roughly the low thousands of triples on typical dev hardware (16-
+      32GB), then genuinely impractical. Raw+sharded trades that away for
+      `O(N)` memory, at a real, currently-unoptimised per-query cost that
+      grows with shard count - more shards is not free the way the memory
+      story alone would suggest. Neither is a strictly-dominant default;
+      which one (or what shard size) is right depends on whether memory or
+      query latency is the tighter constraint for a given deployment - not
+      resolved here, a decision for whoever ships this at a given scale.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
