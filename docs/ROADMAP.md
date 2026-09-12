@@ -3532,6 +3532,67 @@ in-character, less-certain option.
       concrete, dated, honest comparison point, not a claim about the
       current state of the art broadly.
 
+## Phase 2 addendum, continued — is `known`/`coherence` actually calibrated?
+
+- [x] **The question**: a gradient-trained KGE model like ConvE always
+      emits a ranking with no built-in "I'm not sure" - if Zeuss's
+      `known`/`coherence` genuinely tracks whether its answer is right,
+      that's a real capability ConvE-style systems don't have at all,
+      independent of the raw accuracy gap above. Worth checking directly
+      rather than assumed from `known_rate` alone.
+- [x] **First attempt found something alarming, then found it wasn't
+      real - traced before trusting either number.** Logging `answer.
+      answer == target` per query for the same n=100 UMLS sample as the
+      ConvE benchmark gave accuracy of 5.8-16.7% depending on coherence
+      bucket - and *lower* accuracy in the high-coherence bucket than the
+      low one, the opposite of a working signal, and wildly inconsistent
+      with the same sample's already-measured 0.665 Hits@1. Before
+      concluding the confidence signal (or the ConvE result itself) was
+      broken, traced it directly on 10 queries
+      (`diagnose_settle_disagreement.py`): in 9/10 cases, `answer.answer`
+      (the final, settled pick) exactly matched the *unfiltered* raw
+      top-1 candidate - `settle()` was doing exactly its job, not
+      malfunctioning. The real cause: UMLS is heavily multi-valued (mean
+      degree ~155) - the model's single best guess is very often a
+      *different, genuinely true* fact for that (subject, relation) pair,
+      not the one specific triple a given test example happens to
+      withhold. Strict equality to one arbitrary held-out target
+      massively undercounts genuine correctness on a graph shaped like
+      this - precisely the reason filtered ranking exists as a field
+      convention at all. The ConvE comparison (which already used
+      filtered ranking) was never at risk; the calibration script's
+      correctness criterion was the actual bug.
+- [x] **Fixed by asking the right question**: is the returned answer a
+      genuinely known true fact (membership in the full known-triples
+      set), not equality to one held-out example. Re-ran the identical
+      n=100 sample with this criterion: coherence >= `COHERENCE_FLOOR`
+      (97% of queries, 194/200) -> **99.48% accuracy**; coherence below
+      the floor (3%, 6/200) -> **16.67% accuracy**. A real, dramatic gap,
+      not an artifact of the criterion being lenient - if it were just
+      rewarding common/popular guesses regardless of confidence, both
+      buckets would score similarly; they don't. `known`/`coherence` is a
+      genuinely calibrated, actionable confidence signal, not a
+      decorative one - a real capability difference from ranking-only
+      systems like ConvE that always answer regardless of certainty.
+- [x] **Three different, equally valid "is it correct" questions on this
+      data, reported side by side rather than picking whichever looks
+      best:** exact match to one held-out triple - 5.8%; known-fact
+      membership (any true completion) - 99.5%; filtered ranking (the
+      ConvE-comparison convention, target vs *wrong* candidates only) -
+      66.5% Hits@1. These aren't competing measurements of the same
+      thing - low exact-match + high known-fact-membership is exactly
+      what a heavily multi-valued relational graph should produce from a
+      model making genuinely plausible guesses, and filtered ranking is
+      the standard middle ground the field uses for exactly this reason.
+- [x] **Honest caveat on the calibration result itself**: the low-
+      coherence bucket has only n=6 - the *direction* (dramatically lower
+      accuracy) is informative, the precise 16.67% figure is not (a
+      single-digit sample size doesn't support a tight estimate). A
+      larger dedicated run targeting more low-coherence examples
+      specifically (rather than a random n=100, which naturally produces
+      few of them since coverage is 97%) would tighten this - not done
+      here.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
