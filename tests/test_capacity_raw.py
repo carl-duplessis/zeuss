@@ -79,3 +79,50 @@ def test_ask_raw_rescues_the_v039_ceiling_at_v039s_own_tested_dim():
         answer = ask_raw(onto, memory_raw, f"nonexistent_entity_{i}", "is_a")
         assert not answer.known
         assert answer.coherence < 0.4  # measured worst case at this dim/N: 0.198
+
+
+def test_ask_raw_candidate_names_accepts_a_set_and_matches_unscoped():
+    """ask_raw's candidate_names indexes the result positionally (`names[i]`
+    for the winning candidate) - the exact bug this test pins: an earlier
+    version broke with `TypeError: 'set' object is not subscriptable` the
+    first time this was actually exercised with a set (the natural type for
+    "this shard's own entities"), not just a list. Also checks the more
+    important property: scoping to a candidate set that still contains the
+    true answer must not change which answer wins or its coherence."""
+    dim = 8192
+    n_triples = 40
+    onto = Ontology(dim=dim, seed=0)
+    for i in range(n_triples):
+        onto.add(f"subj_{i}", "is_a", f"filler_{i % 5}")
+    memory_raw = onto.ground_raw().raw
+
+    unscoped = ask_raw(onto, memory_raw, "subj_0", "is_a")
+    scoped_names = {f"subj_{i}" for i in range(n_triples)} | {f"filler_{i}" for i in range(5)}
+    scoped = ask_raw(onto, memory_raw, "subj_0", "is_a", candidate_names=scoped_names)
+
+    assert scoped.answer == unscoped.answer == "filler_0"
+    assert scoped.coherence == unscoped.coherence
+
+
+def test_ask_raw_candidate_names_gives_quadratic_scaling_query_cost_relief():
+    """The mechanism behind docs/ROADMAP.md's "Phase 2 addendum, continued"
+    N=6000 stress test: an *unscoped* per-shard raw query loop scores every
+    shard against the WHOLE ontology's entities, not that shard's own - so
+    per-query cost is O(shards * total_entities) = O(N^2/shard_size), not
+    O(N). This doesn't re-run that full stress test (slow, real-data-style
+    validation lives in ROADMAP.md instead, this project's usual pattern) -
+    it just pins the *correctness* half fast: scoping to a strict subset
+    that excludes the true answer must correctly fail to find it (proving
+    the scoping is real, not silently falling back to the full codebook)."""
+    dim = 8192
+    n_triples = 40
+    onto = Ontology(dim=dim, seed=0)
+    for i in range(n_triples):
+        onto.add(f"subj_{i}", "is_a", f"filler_{i % 5}")
+    memory_raw = onto.ground_raw().raw
+
+    # Deliberately exclude "filler_0", the true answer for subj_0.
+    wrong_scope = {f"filler_{i}" for i in range(1, 5)} | {"subj_0"}
+    answer = ask_raw(onto, memory_raw, "subj_0", "is_a", candidate_names=wrong_scope)
+    assert answer.answer != "filler_0"
+    assert answer.answer in wrong_scope

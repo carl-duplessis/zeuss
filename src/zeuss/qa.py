@@ -377,6 +377,7 @@ def ask_raw(
     beta: float = 12.0,
     subject_vector=None,
     coherence_floor: float = RAW_COHERENCE_FLOOR,
+    candidate_names: Any = None,
 ) -> Answer:
     """Like `ask`, but reads from a *raw* (pre-normalisation) memory via
     `Ontology.step_raw` instead of `step` - the fix for v0.39's old,
@@ -428,10 +429,27 @@ def ask_raw(
     bundle/candidate-pool size outside what's been measured, rather than
     trusting the default blindly. This is a real, disclosed requirement
     of the fix, not a claim that any `dim` works for any bundle size.
+
+    ``candidate_names`` (optional): restricts candidate scoring to just
+    these entities instead of every entity `onto` knows about - see
+    `_entity_codebook`'s docstring (the same seam `ask_sharded` uses).
+    ``None`` (default) is an exact no-op. **This one matters more here
+    than it does for `ask`/`ask_sharded`**: a naive per-shard raw query
+    loop that doesn't pass this scores every shard against the *whole*
+    ontology's entities, not just that shard's own - since the number of
+    shards *and* the unscoped candidate count both grow with total KB
+    size, unscoped per-query cost is `O(shards * total_entities) =
+    O(N^2/shard_size)`, not `O(N)` - measured directly: going from 3200
+    to 6000 total entities (1.875x) with an unscoped candidate loop made
+    per-query latency ~3.8x worse, consistent with the quadratic term
+    dominating, not the `O(N)` memory story sharding is supposed to buy.
+    Passing each shard's own entity set here restores `O(N)` query cost
+    to match `O(N)` memory - see `docs/ROADMAP.md`'s "Phase 2 addendum,
+    continued" for the measured before/after.
     """
     subject_hv = onto.entity(subject) if subject_vector is None else subject_vector
     residue = onto.step_raw(memory_raw, subject_hv, relation)
-    names = onto.entity_names()
+    names = onto.entity_names() if candidate_names is None else list(candidate_names)
     scores = [raw_similarity(residue, onto.entity(name)) for name in names]
     order = sorted(range(len(names)), key=lambda i: scores[i], reverse=True)
     ranked = [(names[i], float(scores[i])) for i in order]

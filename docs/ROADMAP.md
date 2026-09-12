@@ -3414,34 +3414,63 @@ in-character, less-certain option.
       raw+sharding push capacity further": yes, substantially, on memory -
       sharding's `O(total_entities * fixed_dim)` (linear in `N`) is the
       real reason, not something specific to this one measurement.
-- [x] **Honest wrinkle, not smoothed over: the memory win came with a real
-      query-latency cost that didn't scale the way raw FLOP-counting would
-      predict.** This 8-shard/dim=32768 configuration's per-query cost
-      (~4.5s) was *slower* than the earlier 2-shard/dim=131072 test's
-      (~0.7s), despite having *lower* predicted compute (8x405x32768 ~
-      1.06e8 candidate-dim units vs 2x805x131072 ~ 2.11e8 - almost exactly
-      half). `ask_raw` rebuilds `onto.entity_names()` and does a
-      per-candidate Python-level loop (`[raw_similarity(...) for name in
-      names]`) freshly on *every* shard's `ask_raw` call - fixed
-      per-candidate Python/dict-lookup overhead that scales with `(shards
-      x candidates)`, not raw vector-math FLOPs, and that overhead
-      dominates once per-candidate `dim` gets small enough. Real, measured,
-      not investigated further here - vectorising this comparison (scoring
-      every candidate in one batched array operation instead of a Python
-      loop per shard) is a plausible fix, genuinely separate from the
-      `ask_sharded`/`candidate_names` fix above (that fixed *how many*
-      candidates get compared; this is about *how* each comparison is
-      done) - not started.
-- [x] **Where this leaves the architecture choice, stated plainly:** raw
-      alone is simplest but memory-quadratic in `N` - fine for KBs up to
-      roughly the low thousands of triples on typical dev hardware (16-
-      32GB), then genuinely impractical. Raw+sharded trades that away for
-      `O(N)` memory, at a real, currently-unoptimised per-query cost that
-      grows with shard count - more shards is not free the way the memory
-      story alone would suggest. Neither is a strictly-dominant default;
-      which one (or what shard size) is right depends on whether memory or
-      query latency is the tighter constraint for a given deployment - not
-      resolved here, a decision for whoever ships this at a given scale.
+- [x] **Honest wrinkle flagged, then traced to its actual cause rather than
+      left as "Python overhead, not investigated further" - it was the
+      identical bug as `ask_sharded`'s, just not fixed there yet.** The
+      8-shard/dim=32768 configuration's per-query cost (~4.5s) being
+      *slower* than an earlier 2-shard/dim=131072 test's (~0.7s), despite
+      *lower* predicted compute, was initially attributed to generic
+      per-candidate Python/dict-lookup overhead. A real stress test at
+      N=6000 (1.875x further, 15 shards) confirmed that guess was
+      incomplete: per-query latency ballooned to ~17-26s - a ~3.8x
+      slowdown for a 1.875x increase in N, matching `(15*6005)/(8*3205) ~
+      3.5x` almost exactly. That ratio is the signature of the *same*
+      unscoped-full-codebook bug already found and fixed in `ask_sharded`
+      earlier - except `ask_raw`'s own hand-rolled per-shard query loop
+      never got the equivalent fix, so every shard was scoring against the
+      *entire* ontology's entities regardless of that shard's own size:
+      `O(shards * total_entities) = O(N^2/shard_size)`, not `O(N)`.
+- [x] **Fixed identically to the `ask_sharded` fix, additively.** `ask_raw`
+      gained the same `candidate_names` parameter `_cleanup`/`ask` already
+      had (`None` default = exact prior behaviour). Caught a real bug
+      while wiring it up, not assumed correct: `ask_raw` indexes its
+      candidate list positionally (`names[i]` for the winning candidate),
+      which breaks with `TypeError: 'set' object is not subscriptable` the
+      moment a caller passes a `set` (the natural type for "this shard's
+      own entities", and exactly what the fix's own first real usage
+      needed) - fixed by normalising to `list(candidate_names)` up front.
+      `tests/test_capacity_raw.py` gained regression coverage for both the
+      set-acceptance bug and the scoping-changes-the-answer-set property.
+- [x] **Re-ran the N=6000 stress test scoped, and the fix is complete, not
+      partial.** Per-query latency dropped from ~17-26s to ~0.7-1.0s (a
+      ~21x recovery) with byte-identical coherence values for every known
+      query - scoping doesn't change *which* answer wins, only how many
+      irrelevant candidates get compared along the way. Cross-checked
+      against the earlier N=3200 point re-run under the same scoped
+      methodology (not the original, unscoped N=3200 number, to keep the
+      comparison apples-to-apples): 0.50s/query at 8 shards -> 0.88s/query
+      at 15 shards, a 1.76x cost increase for a 1.875x increase in shard
+      count - genuinely linear, not the ~3.5x quadratic signature the
+      unscoped version showed at the same two points.
+- [x] **Where this leaves the architecture choice, corrected from the
+      previous, incomplete conclusion:** with `ask_raw`'s scoping fix,
+      raw+sharded is now `O(N)` in *both* memory and query cost, not a
+      memory-for-latency trade - the "honest wrinkle" above turned out to
+      be a fixable implementation gap, not an inherent property of
+      combining raw grounding with sharding. Single-bundle raw remains
+      memory-quadratic and impractical past the low thousands of triples
+      on typical dev hardware (16-32GB) - that part of the tradeoff still
+      stands. Audited whether `ask_sharded` (the *normalized* pipeline)
+      has the same set-vs-list indexing risk its own `shard_entities`
+      could hit - it doesn't: `_cleanup`'s candidate list always passes
+      through `dimensional_collapse`, which reads `codebook.names()`
+      (always a proper list, regardless of what iterable built the
+      codebook), before anything gets indexed positionally. Already
+      covered empirically too, not just by reading the code -
+      `test_ask_sharded_with_shard_entities_matches_unscoped_answers`
+      passes `shard_entities` as a list of *sets* (exactly what `ground_
+      sharded_with_entities` returns) and was green before this entry was
+      even written.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
