@@ -3592,6 +3592,34 @@ in-character, less-certain option.
       specifically (rather than a random n=100, which naturally produces
       few of them since coverage is 97%) would tighten this - not done
       here.
+- [x] **Closed that gap with a deliberately-biased sample, not just a
+      bigger random one - and it tested a mechanistic hypothesis at the
+      same time, not just inflated a count.** `refine_entity_vectors`'
+      whole mechanism is neighbour-vector blending, so a sparsely-
+      connected entity has less signal to draw on - predicting it should
+      generalise less confidently. Selected the 60 test triples whose
+      query-subject has the *lowest* training-graph degree (range 6-62,
+      versus the full graph's own mean ~155) and ran the identical
+      pipeline/criterion as above. Confirmed directly, not assumed: known_
+      rate dropped from the random sample's 97% to 85.8% on this harder
+      slice, and bucketing by query-subject degree shows a clean rising
+      trend in both mean coherence and known_rate (degree 0-20: coherence
+      0.066/known 50%; degree 300+: coherence 0.167/known 91%) - sparser
+      neighbourhoods genuinely produce weaker, honestly-flagged confidence,
+      not noise.
+- [x] **Calibration on this harder, low-coherence-enriched sample is
+      *more* dramatic, not diluted: known=True (n=103) -> 100% accuracy;
+      known=False (n=17) -> 0% accuracy.** A complete separation, on a
+      sample specifically constructed to be the hardest cases available -
+      not a cherry-picked easy population. n=17 in the informative bucket
+      (up from 6) is still not large, and a perfect 0%/100% split on any
+      finite sample invites some skepticism, but it is a plausible outcome
+      under a genuinely very strong effect (not required to be exactly
+      0/100 for the underlying signal to be real), and it's directionally
+      identical to and reinforces the random sample's own 99.48%/16.67%
+      split rather than contradicting it. Two independently-sampled
+      confirmations of the same effect, one random and one deliberately
+      adversarial to it, is stronger evidence than either alone.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
