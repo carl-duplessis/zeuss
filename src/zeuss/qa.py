@@ -79,7 +79,15 @@ class Chain:
     start: str
     relation: str
     hops: list[tuple[str, float]]   # (entity, per-hop coherence) in order
-    cumulative: list[float]         # compounded coherence after each hop
+    # Compounded coherence after each hop. NOT a calibrated confidence -
+    # measured directly (see docs/ROADMAP.md's "`cumulative` is NOT
+    # calibrated" entry): it decays ~1000x over four hops while actual
+    # correctness stays flat at 100%, so it tracks chain *length*, not
+    # chain reliability. Do not read it as "probability this deduction is
+    # right", and do not compare it against COHERENCE_FLOOR (which was
+    # calibrated for single-hop coherence only). Per-hop reliability is
+    # already enforced by the floor check each hop passes.
+    cumulative: list[float]
     resonance_coherence: float = 0.0  # see chain()'s docstring
 
     def reached(self) -> dict[str, float]:
@@ -618,6 +626,13 @@ def chain(
     generalising step honestly reported. Passing that step's own
     ``coherence`` here compounds it into every hop's ``cumulative``, the
     identical multiplicative convention already used *between* hops.
+
+    Propagating that uncertainty is the semantically right thing to do -
+    the generalising step's own coherence *is* calibrated, and silently
+    discarding it was worse - but see `Chain.cumulative`'s own comment
+    before interpreting the result: the compounded number it feeds is
+    **not** a calibrated confidence, so a small ``cumulative`` is not
+    evidence the deduction is wrong.
 
     Deliberately does **not** gate the per-hop `COHERENCE_FLOOR` check -
     that check asks "does *this hop* resonate against the memory", a

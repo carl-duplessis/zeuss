@@ -3712,6 +3712,66 @@ in-character, less-certain option.
         single-hop `coherence` now has been (99.5%/16.7%, above). It is
         a reasonable convention, not a measured one.
 
+## Phase 2 addendum, continued — `cumulative` is NOT calibrated (and a self-correction)
+
+- [x] **Tried to calibration-test the multiplicative compounding
+      convention the way single-hop `coherence` was tested, and the test
+      as designed could not answer the question - reported as the null
+      result it is, not quietly reframed as a success.** 50 chains on
+      real UMLS (25 over `isa`, genuinely transitive; 25 over `produces`,
+      deliberately not transitive, as a contrast), scoring every hop
+      against two ground truths computed straight from the training
+      graph: per-hop validity (is this a real stored edge) and closure
+      validity (is the reached entity genuinely in the true transitive
+      closure of the start). Result: **100% valid on every hop, both
+      relations, every cumulative-coherence bucket, every depth.** With
+      zero errors anywhere there is no variance for a confidence signal
+      to predict, so this design cannot measure calibration at all.
+- [x] **Why zero errors - a structural fact worth stating, since it is
+      also the mechanism's own safety guarantee.** `chain`/`chain_sharded`
+      break on `score < COHERENCE_FLOOR`, so a hop only ever enters
+      `Chain.hops` after passing the *single-hop* gate that was just
+      measured to be strongly calibrated. Bad hops are filtered out
+      before they can be recorded. The multi-hop mechanism inherits
+      single-hop calibration for free - genuinely good news for
+      reliability - but it means the compounded number cannot be
+      evaluated against chain errors that the floor already prevents.
+      (The `produces` contrast was additionally uninformative by
+      construction: those chains almost all terminated at one hop, and a
+      single hop is trivially inside its own start's closure - a real
+      flaw in this test's design, not a property of the substrate.)
+- [x] **The genuinely important finding came from the depth breakdown,
+      not the intended test: `cumulative` decays ~1000x across four hops
+      while actual correctness stays flat at 100%.** hop 1: mean
+      cumulative 0.1080, closure-valid 100%; hop 2: 0.0111, 100%; hop 3:
+      0.0012, 100%; hop 4: 0.0001, 100%. The compounded number therefore
+      decays for reasons *unrelated to whether the deduction is correct* -
+      it tracks chain length, not chain reliability. **`cumulative` is
+      not a calibrated confidence measure and must not be read as "the
+      probability this deduction is right"**; doing so drastically
+      understates deep chains, which on this data were exactly as correct
+      as shallow ones.
+- [x] **Self-correction on the entry immediately above, stated plainly
+      rather than left standing.** That entry justified `prior_coherence`
+      partly by observing the composed result `0.0155` falls below
+      `COHERENCE_FLOOR` (0.08) and concluding the chain was therefore
+      "plausible, not confident". **That comparison was unsupported.**
+      `COHERENCE_FLOOR` was calibrated against *single-hop* coherence;
+      applying it to a compounded product is not a valid test, and this
+      measurement shows why - a hop-4 chain sits at 0.0001, far below the
+      floor, while being 100% correct. What survives of that entry:
+      propagating the generalising step's uncertainty into the chain is
+      still the semantically right thing to do (that step's own coherence
+      *is* calibrated, and silently discarding it was worse), and
+      `prior_coherence` remains an exact no-op by default. What does not
+      survive: any reading of the resulting `cumulative` as a confidence
+      level, in either direction.
+- [x] **What would actually answer the original question, not attempted
+      here:** deliberately admit sub-floor hops (a lowered or disabled
+      gate) so chain errors can occur at all, then test whether
+      `cumulative` separates the good chains from the bad ones. That is
+      the experiment that has variance in it; this one did not.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
