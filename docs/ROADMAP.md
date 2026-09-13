@@ -3772,6 +3772,60 @@ in-character, less-certain option.
       `cumulative` separates the good chains from the bad ones. That is
       the experiment that has variance in it; this one did not.
 
+## Phase 2 addendum, continued — running that experiment properly: the weakest link wins
+
+- [x] **Ran the experiment the previous entry called for.** `chain`/
+      `chain_sharded` gained ``coherence_floor`` (default
+      `COHERENCE_FLOOR` = exact no-op, tested), so the study could run
+      through the shipped code path rather than a parallel
+      reimplementation. At ``coherence_floor=0.0`` the chain keeps walking
+      past hops the calibrated gate would reject - 30 chains over real
+      UMLS `isa`, `max_hops=5`, yielding 132 path-observations that are
+      **40.9% valid / 59.1% invalid**. Real variance at last, versus the
+      previous attempt's 100%-valid/zero-variance dead end.
+- [x] **Three candidate chain-level confidence signals scored against the
+      same ground truth (is every hop 1..k a genuinely stored edge - a
+      *path*-level claim, matching what `cumulative[k]` purports to be
+      confident about), by AUC (probability a random valid path outranks
+      a random invalid one; 0.5 = coin flip):**
+      - **B) minimum per-hop coherence so far ("weakest link"): AUC =
+        1.0000**
+      - A) `cumulative`, the shipped multiplicative product: AUC = 0.9556
+      - C) the most recent hop's coherence alone: AUC = 0.7067
+- [x] **The shipped convention loses, and there is a mechanism for why -
+      not just a number.** A path is invalid *iff* it contains at least
+      one bad hop; a bad hop has low coherence (precisely the single-hop
+      calibration already measured at 99.5% vs 16.7%); therefore the
+      *minimum* over hops detects the broken link directly. `cumulative`
+      has no equivalent mechanism - it multiplies every hop together, so
+      it conflates "how many hops were taken" with "how good were they",
+      and a long chain of good hops is scored below a short chain of
+      mediocre ones. Mean values make the conflation visible:
+      `cumulative` reads 0.0622 on valid paths versus 0.0008 on invalid
+      (a ratio driven largely by length), while min-per-hop reads 0.1039
+      versus 0.0343 (a genuine quality gap).
+- [x] **This vindicates the shipped *stopping rule* even as it retires the
+      shipped *number*.** Breaking the chain at the first sub-floor hop is
+      exactly an incremental min-per-hop test - which is why the
+      default-floor chains in the previous entry came back 100% valid.
+      The substrate's multi-hop safety was never resting on `cumulative`;
+      it rests on the per-hop floor, which this experiment shows is the
+      right test. `cumulative` is a reporting artifact layered on top,
+      and a misleading one.
+- [x] **Honest limits of this result, stated rather than buried.** (i)
+      Validity declines steeply with depth in this data (hop 1: 100%,
+      hop 3: 16.7%, hop 5: 0%), and *both* candidate signals also decline
+      with depth, so both AUCs carry some depth confounding; a
+      within-depth stratified analysis would separate "measures quality"
+      from "measures length" cleanly and was not run (the hop-2 stratum,
+      16 valid / 14 invalid, is the only one with real balance). The
+      mechanistic argument above is what distinguishes B from A, not the
+      AUC gap alone. (ii) n=132 observations from 30 chains is modest, and
+      a perfect AUC=1.0000 over 54x78 pairs should be read as "very
+      strong separation on this sample", not as a guarantee it never
+      fails - more data would very likely put it below 1.0. (iii) One
+      relation (`isa`) on one dataset.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

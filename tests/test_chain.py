@@ -160,3 +160,65 @@ def test_prior_coherence_does_not_gate_the_per_hop_coherence_floor():
     assert len(baseline.hops) == 3
     assert [n for n, _ in seeded.hops] == [n for n, _ in baseline.hops]  # not truncated
     assert seeded.cumulative[-1] < COHERENCE_FLOOR  # but honestly reported as weak
+
+
+def test_coherence_floor_defaults_to_an_exact_no_op():
+    onto = demo_ontology()
+    memory = onto.ground()
+    default = chain(onto, memory, "socrates", "is_a")
+    explicit = chain(onto, memory, "socrates", "is_a", coherence_floor=COHERENCE_FLOOR)
+    assert [n for n, _ in default.hops] == [n for n, _ in explicit.hops]
+    assert default.cumulative == explicit.cumulative
+
+
+def test_lowering_coherence_floor_admits_hops_the_default_rejects():
+    """The seam docs/ROADMAP.md's compounding-calibration experiment needs:
+    with the default floor every recorded hop has already passed the
+    calibrated single-hop gate, so chains are ~100% valid and contain no
+    errors for a confidence signal to discriminate. Dropping the floor to
+    0 lets the chain keep walking past that gate - the only way to get
+    chains that contain genuine mistakes."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    default = chain(onto, memory, "dragon", "is_a")  # unknown subject: no hops clear the floor
+    assert default.hops == []
+
+    admitted = chain(onto, memory, "dragon", "is_a", coherence_floor=0.0)
+    assert len(admitted.hops) > 0  # now it walks anyway, honestly low-coherence
+    assert all(coh < COHERENCE_FLOOR for _, coh in admitted.hops[:1])
+
+
+def test_min_hop_coherence_is_the_weakest_hop():
+    onto = demo_ontology()
+    memory = onto.ground()
+    c = chain(onto, memory, "socrates", "is_a")
+    assert len(c.hops) == 3
+    assert c.min_hop_coherence() == min(coh for _, coh in c.hops)
+
+
+def test_min_hop_coherence_is_one_for_an_empty_chain():
+    """No hops means nothing weakened the chain - matches chain()'s own
+    prior_coherence identity of 1.0 rather than returning 0.0, which would
+    read as 'maximally unreliable' for a chain that simply never ran."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    c = chain(onto, memory, "dragon", "is_a")
+    assert c.hops == []
+    assert c.min_hop_coherence() == 1.0
+
+
+def test_min_hop_coherence_does_not_decay_with_chain_length():
+    """The property that makes it preferable to `cumulative` as a
+    chain-level reliability signal (see docs/ROADMAP.md): cumulative
+    shrinks with every additional hop regardless of hop quality, so it is
+    not comparable across chains of different lengths. The weakest-hop
+    signal only moves when a genuinely weaker hop appears."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    c = chain(onto, memory, "socrates", "is_a")
+    assert len(c.hops) == 3
+    # cumulative strictly decays hop over hop...
+    assert c.cumulative[-1] < c.cumulative[0]
+    # ...while the weakest-hop signal stays at the scale of a single hop.
+    assert c.min_hop_coherence() >= min(c.cumulative)
+    assert c.min_hop_coherence() == min(coh for _, coh in c.hops)

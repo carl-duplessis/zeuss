@@ -79,20 +79,45 @@ class Chain:
     start: str
     relation: str
     hops: list[tuple[str, float]]   # (entity, per-hop coherence) in order
-    # Compounded coherence after each hop. NOT a calibrated confidence -
-    # measured directly (see docs/ROADMAP.md's "`cumulative` is NOT
-    # calibrated" entry): it decays ~1000x over four hops while actual
-    # correctness stays flat at 100%, so it tracks chain *length*, not
-    # chain reliability. Do not read it as "probability this deduction is
-    # right", and do not compare it against COHERENCE_FLOOR (which was
-    # calibrated for single-hop coherence only). Per-hop reliability is
-    # already enforced by the floor check each hop passes.
+    # Compounded coherence after each hop. NOT a calibrated confidence,
+    # measured directly twice (see docs/ROADMAP.md): it decays ~1000x over
+    # four hops while correctness stays flat, so it conflates chain
+    # *length* with chain *reliability*. Do not read it as "probability
+    # this deduction is right", and do not compare it against
+    # COHERENCE_FLOOR (calibrated for single-hop coherence only).
+    #   Use `min_hop_coherence()` instead: scored head-to-head on chains
+    #   containing real errors, the weakest-hop signal separated valid
+    #   from invalid paths perfectly (AUC 1.0000) while this product
+    #   scored 0.9556 - and the weakest-hop test has a mechanism behind
+    #   it (a path is invalid iff some hop is bad; a bad hop has low
+    #   coherence), which the product does not.
     cumulative: list[float]
     resonance_coherence: float = 0.0  # see chain()'s docstring
 
     def reached(self) -> dict[str, float]:
         """Every entity reached, mapped to its compounded coherence."""
         return {name: c for (name, _), c in zip(self.hops, self.cumulative)}
+
+    def min_hop_coherence(self) -> float:
+        """The weakest single hop in this chain - the chain-level
+        reliability signal to prefer over :attr:`cumulative`.
+
+        Measured head-to-head on real UMLS chains deliberately run with
+        the per-hop gate disabled so they contained genuine errors (see
+        `docs/ROADMAP.md`): this separated valid from invalid paths
+        perfectly (AUC 1.0000) where `cumulative`'s multiplicative product
+        managed 0.9556 and the latest hop's coherence alone managed
+        0.7067. It also has a mechanism behind it rather than only a
+        score - a path is invalid exactly when some hop in it is bad, and
+        a bad hop shows low coherence (the single-hop calibration
+        measured at 99.5% vs 16.7%), so the minimum finds the broken link
+        directly. Unlike `cumulative` it does not decay merely because a
+        chain is long, so it is comparable across chains of different
+        lengths and against `COHERENCE_FLOOR` itself.
+
+        ``1.0`` for a chain with no hops (nothing weakened it), matching
+        `chain`'s own ``prior_coherence`` identity."""
+        return min((coh for _, coh in self.hops), default=1.0)
 
     def __str__(self) -> str:
         if not self.hops:
@@ -586,10 +611,21 @@ def chain(
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
     prior_coherence: float = 1.0,
+    coherence_floor: float = COHERENCE_FLOOR,
 ) -> Chain:
     """Iterate the one-hop operator to walk ``relation``'s transitive closure.
 
     ``axiom_bias`` (see `ask`/`_cleanup`) is applied at every hop.
+
+    ``coherence_floor`` (optional, default `COHERENCE_FLOOR` = exact
+    no-op): the per-hop cutoff below which the chain stops. Lowering it
+    admits hops the calibrated single-hop gate would normally reject -
+    which is how `docs/ROADMAP.md`'s compounding-calibration experiment
+    gets chains that contain *errors* at all (with the default floor,
+    every recorded hop has already passed that gate, so chains are
+    ~100% valid and there is no variance any confidence signal could
+    predict). Not recommended for ordinary use: the floor is exactly
+    what keeps multi-hop deduction honest.
 
     Each hop: take a wave step, collapse the residue onto the nearest entity
     (the discretisation), and re-inject that clean entity as the next subject.
@@ -650,7 +686,7 @@ def chain(
     for _ in range(max_hops):
         residue = onto.step(memory, ent, relation)
         name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta, axiom_bias)
-        if coherence < COHERENCE_FLOOR or name in visited:
+        if coherence < coherence_floor or name in visited:
             break
         running *= coherence
         hops.append((name, coherence))
@@ -680,6 +716,7 @@ def chain_sharded(
     axiom_bias: Callable[[str], float] | None = None,
     shard_weights: list[float] | None = None,
     prior_coherence: float = 1.0,
+    coherence_floor: float = COHERENCE_FLOOR,
 ) -> Chain:
     """`chain`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`/`ask_sharded`) instead of one - at *every*
@@ -692,6 +729,11 @@ def chain_sharded(
     chain starting from an entity that was itself inferred (the
     generalise-then-deduce composition), and deliberately does not gate
     the per-hop `COHERENCE_FLOOR` check.
+
+    ``coherence_floor`` (optional, default `COHERENCE_FLOOR` = exact
+    no-op): see `chain`'s docstring - lowering it admits hops the
+    calibrated single-hop gate would reject, which is only useful for
+    deliberately studying chain errors, not for ordinary queries.
 
     ``Chain.resonance_coherence`` (see `chain`'s docstring) is computed
     against whichever shard won the *final* hop - the memory whose
@@ -742,7 +784,7 @@ def chain_sharded(
             if best is None or score > best[1]:
                 best = (name, score, memory)
         name, score, memory = best
-        if score < COHERENCE_FLOOR or name in visited:
+        if score < coherence_floor or name in visited:
             break
         running *= score
         hops.append((name, score))
