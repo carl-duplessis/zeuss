@@ -3621,6 +3621,58 @@ in-character, less-certain option.
       confirmations of the same effect, one random and one deliberately
       adversarial to it, is stronger evidence than either alone.
 
+## Phase 2 addendum, continued — composability: generalise, then deduce, in one pipeline
+
+- [x] **The gap this closes**: every capability this project has validated
+      on real data - robust recall, honest guess-detection, transitive
+      `isa`-hierarchy deduction (Phase 0), generalisation via `entity_
+      refined` (Phase 2), calibrated confidence (above) - had been tested
+      *in isolation*. Nothing had shown the continuous (correlation-based
+      generalisation) and discrete (explicit multi-hop deduction) halves
+      actually handing off to each other - the literal claim `VISION.md`
+      names the project after. Neither `chain`/`chain_sharded` needed any
+      new capability for this (confirmed by reading, not assumed) -
+      composability just required actually wiring the existing pieces
+      together and running it on real data.
+- [x] **Demonstrated on real UMLS data, end to end, every step
+      programmatically verified against the actual stored graph, not
+      eyeballed**: `(neoplastic_process, produces, receptor)` is a genuine
+      *test* triple (confirmed absent from the training set). Ordinary
+      `ask_sharded` (no refinement) answers confidently but *wrong*
+      (`biologically_active_substance`, `known=True`, incorrect) - the
+      structural absence of generalisation Phase 0 established, still
+      true for the ordinary path by construction. The generalising path
+      (`ground_sharded_refined` + `entity_refined`-scored `ask_sharded`)
+      correctly recovers `receptor` - a fact never directly stored,
+      inferred purely through neighbour correlation. That recovered
+      entity is then handed to `chain_sharded(..., 'receptor', 'isa',
+      max_hops=4)` - ordinary, non-refined explicit deduction over the
+      real `isa` hierarchy (Phase 0(b)'s already-validated mechanism) -
+      which derives `receptor -> physical_object`, verified directly
+      against `train.tsv`: a real, stored edge, not a plausible-looking
+      fabrication.
+- [x] **The chain stopping at one hop is itself the right kind of
+      finding, not a shortfall to explain away.** `max_hops=4` was
+      allowed; `chain_sharded` stopped after one because `physical_object`
+      genuinely has no further stored `isa` edges in this dataset
+      (checked directly in `train.tsv`, not assumed) - the mechanism
+      walked exactly as far as the real graph supports and stopped
+      honestly rather than continuing onto a hallucinated hop. That
+      restraint is the same "don't answer past what the data supports"
+      discipline `COHERENCE_FLOOR`/`known` already enforce at the single-
+      hop level, now shown holding at the multi-hop, cross-mechanism
+      level too.
+- [x] **Scope, stated plainly**: one worked example, not a systematic
+      study of how often a generalised inference successfully feeds a
+      useful downstream deduction, or how confidence compounds across the
+      handoff (the recovered entity's own generalisation coherence, 0.16,
+      isn't currently propagated into the chain's own reported
+      coherence - `chain_sharded`'s compounding logic was designed for
+      chains that start from a literal `ask`, not a generalising one).
+      Whether that compounding *should* happen, and what it would mean
+      for `known` at the end of a mixed continuous-then-discrete chain,
+      is a real, unanswered design question - not resolved here.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
