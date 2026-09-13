@@ -577,6 +577,7 @@ def chain(
     max_hops: int = 6,
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
+    prior_coherence: float = 1.0,
 ) -> Chain:
     """Iterate the one-hop operator to walk ``relation``'s transitive closure.
 
@@ -604,12 +605,33 @@ def chain(
     genuinely new piece of information ``cumulative``'s per-hop product
     alone doesn't carry (checked directly: `test_chain_resonance_coherence_
     is_high_for_a_clean_transitive_chain`). ``0.0`` when no hops were taken.
+
+    ``prior_coherence`` (optional, default ``1.0`` = exact no-op): seeds
+    ``cumulative``'s running product, for a chain whose *starting entity*
+    was itself inferred rather than known. The motivating case is the
+    generalise-then-deduce composition (see `docs/ROADMAP.md`'s
+    composability entry): `ask`/`ask_sharded` with ``entity_vectors=
+    onto.entity_refined`` recovers an entity that was never directly
+    stored, at its own coherence; feeding that entity straight into
+    `chain` previously reported the resulting deduction as though it had
+    started from certainty, silently dropping the uncertainty the
+    generalising step honestly reported. Passing that step's own
+    ``coherence`` here compounds it into every hop's ``cumulative``, the
+    identical multiplicative convention already used *between* hops.
+
+    Deliberately does **not** gate the per-hop `COHERENCE_FLOOR` check -
+    that check asks "does *this hop* resonate against the memory", a
+    question about hop evidence quality, not about whether the chain
+    started somewhere right. Folding the prior into it would truncate
+    chains whose hops are each individually clean purely because the
+    starting point was uncertain, conflating two genuinely different
+    signals. Only ``cumulative`` reflects the prior.
     """
     ent = onto.entity(subject)
     visited = {subject}
     hops: list[tuple[str, float]] = []
     cumulative: list[float] = []
-    running = 1.0
+    running = prior_coherence
     for _ in range(max_hops):
         residue = onto.step(memory, ent, relation)
         name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta, axiom_bias)
@@ -642,12 +664,19 @@ def chain_sharded(
     beta: float = 12.0,
     axiom_bias: Callable[[str], float] | None = None,
     shard_weights: list[float] | None = None,
+    prior_coherence: float = 1.0,
 ) -> Chain:
     """`chain`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`/`ask_sharded`) instead of one - at *every*
     hop, queries every shard and keeps whichever gives the highest
     coherence, not just once at the start. A fact needed partway through a
     chain can live in a different shard than the fact before it.
+
+    ``prior_coherence`` (optional, default ``1.0`` = exact no-op): see
+    `chain`'s docstring - seeds ``cumulative``'s running product for a
+    chain starting from an entity that was itself inferred (the
+    generalise-then-deduce composition), and deliberately does not gate
+    the per-hop `COHERENCE_FLOOR` check.
 
     ``Chain.resonance_coherence`` (see `chain`'s docstring) is computed
     against whichever shard won the *final* hop - the memory whose
@@ -686,7 +715,7 @@ def chain_sharded(
     visited = {subject}
     hops: list[tuple[str, float]] = []
     cumulative: list[float] = []
-    running = 1.0
+    running = prior_coherence
     winning_memory = memories[0]
     for _ in range(max_hops):
         best = None

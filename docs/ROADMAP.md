@@ -3672,6 +3672,45 @@ in-character, less-certain option.
       Whether that compounding *should* happen, and what it would mean
       for `known` at the end of a mixed continuous-then-discrete chain,
       is a real, unanswered design question - not resolved here.
+- [x] **Resolved that design question, and the answer made the demo's own
+      headline claim weaker rather than stronger.** `chain`/`chain_sharded`
+      gained ``prior_coherence`` (default ``1.0`` = exact no-op, verified
+      bit-for-bit against every prior call site), which seeds
+      ``cumulative``'s running product instead of the hardcoded ``1.0``.
+      A chain starting from a *generalised* entity now compounds that
+      inference's own uncertainty through every hop, using the identical
+      multiplicative convention already used *between* hops rather than
+      inventing a second one.
+      - **Deliberately does not gate the per-hop `COHERENCE_FLOOR`
+        check**, and there is a test pinning that (`test_prior_coherence_
+        does_not_gate_the_per_hop_coherence_floor`): the floor asks "does
+        *this hop* resonate against the memory" - hop evidence quality -
+        while the prior asks "did we start somewhere correct". Folding
+        one into the other would truncate chains whose hops are each
+        individually clean purely because the starting point was
+        uncertain, conflating two genuinely different signals. Only
+        ``cumulative`` reflects the prior.
+      - Verified on the exact real-UMLS case that motivated it: same
+        trajectory (`receptor -> physical_object`, unchanged - a prior is
+        about confidence, not about which path gets walked), reported
+        confidence correctly drops `0.0968 -> 0.0155`, exactly the
+        generalising step's own `0.1600` coherence folded in.
+      - **The honest consequence, stated rather than buried: `0.0155` is
+        *below* `COHERENCE_FLOOR` (0.08).** So the correct verdict on the
+        composability demo's own chain is "plausible, not confident", not
+        the confident-looking `0.0968` it previously reported. The demo
+        still shows the two mechanisms genuinely composing - that claim
+        stands - but the composed result is honestly weak, and the
+        substrate now says so instead of silently discarding the
+        uncertainty the generalising step had already measured.
+      - Not done, deliberately: `entails()` still calls `chain()` with no
+        prior (its `Verdict.coherence` would inherit one naturally if
+        passed) - left alone rather than extended speculatively, since no
+        generalise-then-`entails` caller exists yet. Also still open: the
+        multiplicative compounding convention itself - between hops *or*
+        across this handoff - has never been calibration-tested the way
+        single-hop `coherence` now has been (99.5%/16.7%, above). It is
+        a reasonable convention, not a measured one.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,

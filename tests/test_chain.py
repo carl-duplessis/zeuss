@@ -109,3 +109,54 @@ def test_chain_resonance_coherence_carries_information_cumulative_does_not():
     c = chain(onto, memory, "socrates", "is_a")
     assert len(c.hops) == 3
     assert abs(c.resonance_coherence - c.cumulative[-1]) > 0.3
+
+
+def test_prior_coherence_defaults_to_an_exact_no_op():
+    """Every pre-existing call site passes no prior - the default must be
+    bit-for-bit what those calls always did, not merely close."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    without = chain(onto, memory, "socrates", "is_a")
+    explicit_one = chain(onto, memory, "socrates", "is_a", prior_coherence=1.0)
+    assert [n for n, _ in without.hops] == [n for n, _ in explicit_one.hops]
+    assert without.cumulative == explicit_one.cumulative
+
+
+def test_prior_coherence_compounds_into_cumulative():
+    """The generalise-then-deduce composition (see docs/ROADMAP.md): a
+    chain whose starting entity was itself *inferred* at some coherence
+    should report that uncertainty compounded through every hop, rather
+    than reporting the deduction as though it had started from certainty.
+    Uses the identical multiplicative convention already used between
+    hops, so the whole cumulative series just scales by the prior."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    prior = 0.5
+    baseline = chain(onto, memory, "socrates", "is_a")
+    seeded = chain(onto, memory, "socrates", "is_a", prior_coherence=prior)
+
+    # Same trajectory - a prior is about confidence, not about which path is walked.
+    assert [n for n, _ in seeded.hops] == [n for n, _ in baseline.hops]
+    assert [c for _, c in seeded.hops] == [c for _, c in baseline.hops]
+    # ...but every cumulative entry is scaled by the prior.
+    for base_c, seeded_c in zip(baseline.cumulative, seeded.cumulative):
+        assert abs(seeded_c - base_c * prior) < 1e-12
+
+
+def test_prior_coherence_does_not_gate_the_per_hop_coherence_floor():
+    """A deliberate design decision, pinned so it isn't 'tidied' later: the
+    per-hop COHERENCE_FLOOR check asks 'does *this hop* resonate against
+    the memory' - a question about hop evidence quality, not about whether
+    the chain started somewhere correct. A tiny prior (here far below the
+    floor) must therefore NOT truncate a chain whose hops are each
+    individually clean; it only makes the reported cumulative confidence
+    honestly small."""
+    onto = demo_ontology()
+    memory = onto.ground()
+    tiny_prior = COHERENCE_FLOOR / 100.0
+    baseline = chain(onto, memory, "socrates", "is_a")
+    seeded = chain(onto, memory, "socrates", "is_a", prior_coherence=tiny_prior)
+
+    assert len(baseline.hops) == 3
+    assert [n for n, _ in seeded.hops] == [n for n, _ in baseline.hops]  # not truncated
+    assert seeded.cumulative[-1] < COHERENCE_FLOOR  # but honestly reported as weak
