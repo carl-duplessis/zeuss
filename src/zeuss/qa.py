@@ -79,18 +79,18 @@ class Chain:
     start: str
     relation: str
     hops: list[tuple[str, float]]   # (entity, per-hop coherence) in order
-    # Compounded coherence after each hop. NOT a calibrated confidence,
-    # measured directly twice (see docs/ROADMAP.md): it decays ~1000x over
-    # four hops while correctness stays flat, so it conflates chain
-    # *length* with chain *reliability*. Do not read it as "probability
-    # this deduction is right", and do not compare it against
-    # COHERENCE_FLOOR (calibrated for single-hop coherence only).
-    #   Use `min_hop_coherence()` instead: scored head-to-head on chains
-    #   containing real errors, the weakest-hop signal separated valid
-    #   from invalid paths perfectly (AUC 1.0000) while this product
-    #   scored 0.9556 - and the weakest-hop test has a mechanism behind
-    #   it (a path is invalid iff some hop is bad; a bad hop has low
-    #   coherence), which the product does not.
+    # Compounded coherence after each hop. Measured on chains containing
+    # real errors (see docs/ROADMAP.md): *within* a fixed chain length
+    # this separates valid from invalid paths perfectly (AUC 1.0000), so
+    # it does genuinely track chain quality. Its real defect is that it is
+    # not comparable ACROSS lengths - it multiplies in one more factor per
+    # hop, so a valid long chain scores below an invalid short one. Hence:
+    # do not compare it against COHERENCE_FLOOR (calibrated for single-hop
+    # coherence), and do not rank chains of different lengths by it.
+    #   Prefer `min_hop_coherence()` for anything cross-chain: it is
+    #   equally perfect within a depth and carries no length dependence,
+    #   so it stays comparable between chains and against a fixed
+    #   threshold.
     cumulative: list[float]
     resonance_coherence: float = 0.0  # see chain()'s docstring
 
@@ -104,16 +104,23 @@ class Chain:
 
         Measured head-to-head on real UMLS chains deliberately run with
         the per-hop gate disabled so they contained genuine errors (see
-        `docs/ROADMAP.md`): this separated valid from invalid paths
-        perfectly (AUC 1.0000) where `cumulative`'s multiplicative product
-        managed 0.9556 and the latest hop's coherence alone managed
-        0.7067. It also has a mechanism behind it rather than only a
-        score - a path is invalid exactly when some hop in it is bad, and
-        a bad hop shows low coherence (the single-hop calibration
-        measured at 99.5% vs 16.7%), so the minimum finds the broken link
-        directly. Unlike `cumulative` it does not decay merely because a
-        chain is long, so it is comparable across chains of different
-        lengths and against `COHERENCE_FLOOR` itself.
+        `docs/ROADMAP.md`). Pooled across depths this separated valid from
+        invalid paths perfectly (AUC 1.0000) where `cumulative` managed
+        0.9584 and the latest hop's coherence alone managed 0.7694 - but
+        the honest reading of that gap needs the stratified result:
+        *within* a fixed depth, `cumulative` is also 1.0000. Both
+        aggregate over every hop so far, so both catch a bad hop wherever
+        it occurred; the latest-hop signal does not (0.5802 at depth 3,
+        where a path can be invalid from an earlier hop it cannot see).
+
+        The reason to prefer this one is therefore narrower and more
+        precise than "it discriminates better": it carries no length
+        dependence. `cumulative` multiplies in one more factor per hop, so
+        a valid long chain scores below an invalid short one and its
+        values cannot be compared between chains of different lengths (or
+        against a fixed threshold such as `COHERENCE_FLOOR`). The weakest
+        hop stays on the scale of a single hop no matter how long the
+        chain is.
 
         ``1.0`` for a chain with no hops (nothing weakened it), matching
         `chain`'s own ``prior_coherence`` identity."""

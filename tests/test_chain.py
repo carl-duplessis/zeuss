@@ -208,11 +208,16 @@ def test_min_hop_coherence_is_one_for_an_empty_chain():
 
 
 def test_min_hop_coherence_does_not_decay_with_chain_length():
-    """The property that makes it preferable to `cumulative` as a
-    chain-level reliability signal (see docs/ROADMAP.md): cumulative
-    shrinks with every additional hop regardless of hop quality, so it is
-    not comparable across chains of different lengths. The weakest-hop
-    signal only moves when a genuinely weaker hop appears."""
+    """The one property that makes this preferable to `cumulative` as a
+    chain-level signal - stated precisely, because a stratified
+    measurement corrected an earlier, stronger claim (see
+    docs/ROADMAP.md): *within* a fixed chain length both signals separate
+    valid from invalid paths perfectly, so cumulative is not worse at
+    measuring quality. Its actual defect is length dependence - it
+    multiplies in one more factor per hop, so its values are not
+    comparable across chains of different lengths or against a fixed
+    threshold. The weakest-hop signal only moves when a genuinely weaker
+    hop appears, so it stays on a single hop's scale at any length."""
     onto = demo_ontology()
     memory = onto.ground()
     c = chain(onto, memory, "socrates", "is_a")

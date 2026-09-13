@@ -3825,6 +3825,58 @@ in-character, less-certain option.
       strong separation on this sample", not as a guarantee it never
       fails - more data would very likely put it below 1.0. (iii) One
       relation (`isa`) on one dataset.
+      **-> Limit (i) was then actually resolved, and it reversed part of
+      the conclusion above - see the next entry.**
+
+## Phase 2 addendum, continued — the within-depth test, which corrects the entry above
+
+- [x] **Ran the stratified analysis the previous entry listed as its own
+      biggest limitation, and it overturned that entry's central claim.**
+      70 chains (up from 30), real UMLS `isa`, `coherence_floor=0.0`,
+      `max_hops=3`, 209 path-observations (126 valid / 83 invalid). Raw
+      per-observation records were dumped to JSON this time so no future
+      question about this data costs another hour-long run. Computing
+      each signal's AUC *within a single depth* holds chain length
+      constant by construction, which is the only way to tell "measures
+      chain quality" apart from "measures chain length, and length
+      happens to correlate with errors here":
+      - hop 2 (41 valid / 29 invalid): `cumulative` AUC **1.0000**,
+        min-per-hop 1.0000, this-hop-only 1.0000
+      - hop 3 (15 valid / 54 invalid): `cumulative` AUC **1.0000**,
+        min-per-hop 1.0000, this-hop-only 0.5802
+      - hop 1: 70/70 valid, no variance, uninformative
+- [x] **Correction: the previous entry's "the shipped convention loses,
+      and it has no mechanism" was wrong.** Within a fixed chain length,
+      `cumulative` separates valid from invalid paths *perfectly* -
+      exactly as well as min-per-hop. The entire pooled AUC gap
+      (0.9584 vs 1.0000 on this larger sample; 0.9556 vs 1.0000 before)
+      is an artifact of pooling across depths, not a quality difference
+      between the two signals. Both aggregate every hop so far, and both
+      therefore catch a bad hop wherever it occurred.
+- [x] **What the real defect is, stated precisely now that it is
+      measured: `cumulative` is not comparable *across* chain lengths.**
+      A valid 3-hop chain scores below an invalid 2-hop chain purely
+      because it multiplied one more factor in, which is what produces
+      the cross-depth ranking errors and the sub-1.0 pooled AUC.
+      Min-per-hop has no such length dependence, so it can be compared
+      between chains of different lengths and against a fixed threshold.
+      That - not "cumulative fails to measure quality" - is the actual
+      reason to prefer `Chain.min_hop_coherence()`, and the reason the
+      shipped `COHERENCE_FLOOR` comparison was invalid for `cumulative`
+      specifically.
+- [x] **The hop-3 row also settles why aggregation is needed at all.**
+      "This hop only" scores 1.0000 at depth 2 but collapses to 0.5802 at
+      depth 3 - because at depth 2 the first hop is always valid here, so
+      path validity reduces to the current hop, while at depth 3 a path
+      can be invalid from an *earlier* bad hop the latest-hop signal
+      cannot see. Any usable chain-level signal must aggregate over all
+      hops; both min and product do, the latest-hop coherence does not.
+- [x] **Method note worth keeping:** this is the second time in this
+      thread that a pooled statistic implied a conclusion a stratified
+      one reversed (the first being the calibration false alarm traced to
+      UMLS's multi-valued relations). Both times the fix was to hold the
+      confound constant rather than to reason about it - stratify before
+      trusting a pooled AUC or accuracy on this data.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
