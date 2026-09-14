@@ -1269,6 +1269,16 @@ class Ontology:
     # times the per-shard triple count gives the ~5x known/unknown
     # separation `docs/ROADMAP.md` calibrated. Used by
     # `recommended_raw_dim`.
+    #
+    # This buys the ABSTENTION MARGIN, not accuracy - measured directly by
+    # sweeping the ratio at shard=400 (see docs/ROADMAP.md's scale-wall
+    # entry): recovery is already perfect at ratio ~20 (10/10), and
+    # everything above that only widens the known/absent margin, which
+    # grows as sqrt(ratio) - 1.71x at 20, 2.54x at 41, 3.93x at 82, 5.11x
+    # at 164. Since memory is `entities x dim x 16`, a caller who wants
+    # ranking only can drop to ~20 for an 8x smaller codebook (FB15k-237:
+    # 1.9GB instead of 15.2GB) and give up the answerability detector.
+    # Keep 164 when `known` matters; lower it deliberately when it does not.
     RAW_DIM_PER_TRIPLE = 164
 
     @staticmethod

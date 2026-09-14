@@ -4265,6 +4265,73 @@ in-character, less-certain option.
       detection would need a source of evidence outside the KB - which is
       a different system, not a better threshold.
 
+## Phase 2 addendum, continued — the scale wall, and what actually pays for it
+
+- [x] **Why this was worth doing before anything else:** every result in
+      this entire addendum sits at ~10K triples and ~135 entities. Real
+      knowledge graphs are orders of magnitude larger, so the scale
+      question decides whether the rest is engineering or academia.
+- [x] **The binding constraint is entity count, not triple count.** The
+      entity codebook costs `entities x dim x 16` bytes, and `dim` is set
+      by *shard* size rather than KB size - so adding triples adds shards
+      at constant `dim`, and memory grows **linearly in entities**. That
+      is the good news; the constant is the problem.
+- [x] **Shrinking `shard_size` does not escape the wall, it slides along
+      it.** Memory is `E x 164 x shard x 16` while latency tracks shard
+      *count* `T / shard`, so their product is
+      `164 x 16 x E x T` - **independent of `shard`**. Verified
+      numerically across shard 50..1600 on FB15k-237 dimensions (product
+      constant at ~20,750 GB-shards). You can trade memory for latency
+      freely; the product is fixed by the graph. A single number,
+      `E x T`, therefore predicts feasibility: UMLS 1.4e6, FB15k-237
+      7.9e9 (5,619x UMLS), YAGO3-10 2.7e11 (188,762x).
+- [x] **But the load-bearing assumption turned out to be wrong in an
+      interesting way - and testing it is what makes this analysis worth
+      anything.** `RAW_DIM_PER_TRIPLE = 164` was treated as the price of
+      admission. Sweeping `dim` at fixed `shard=400` and measuring both
+      recovery and the known/absent margin:
+      | ratio | margin | correct | MB/entity |
+      |---|---|---|---|
+      | 5.1 | 1.00x | 6/10 | 0.03 |
+      | 10.2 | 1.49x | 9/10 | 0.07 |
+      | 20.5 | 1.71x | **10/10** | 0.13 |
+      | 41.0 | 2.54x | 10/10 | 0.26 |
+      | 81.9 | 3.93x | 10/10 | 0.52 |
+      | 163.8 | 5.11x | 10/10 | 1.05 |
+      **Accuracy saturates at ratio ~20.** Everything above that buys only
+      *margin*, which grows as `sqrt(ratio)` exactly as the capacity
+      derivation predicts.
+- [x] **So the memory is not paying for correctness - it is paying for the
+      abstention detector**, which is precisely the capability that makes
+      this substrate unusual rather than merely behind. Two honest
+      operating points, not one:
+      | dataset | as a ranker (r=20) | as an abstainer (r=164) |
+      |---|---|---|
+      | UMLS | 18 MB | 142 MB |
+      | FB15k-237 | **1.9 GB** | 15.2 GB |
+      | WN18RR | 5.4 GB | 42.9 GB |
+      | YAGO3-10 | 16.1 GB | 129.2 GB |
+      FB15k-237 as a ranker fits the 16.9GB development machine *today*;
+      as an abstainer it needs a server. That is a far more useful
+      statement than "it does not scale", and it was only available
+      because the assumption got tested instead of trusted.
+- [x] **Where it genuinely runs out, stated plainly.** Zeuss stores random
+      quasi-orthogonal vectors, which need high dimension to stay
+      separable; a trained KGE *learns* a compressed code and needs only
+      a few hundred dimensions. At the abstainer operating point that is
+      **~655x more memory per entity** than TransE/ConvE-class models
+      (524,288 vs 800 bytes). Wikidata-scale (1e8 entities) is ~6-52 TB
+      either way - out of reach architecturally, not by tuning. The
+      gradient-free choice is exactly what costs this: no learned
+      compression, so the dimension is the price.
+- [x] **Consequence for direction.** Mid-size benchmarks (FB15k-237,
+      WN18RR) are reachable now and have published baselines, so the
+      "never tested at real scale" gap is closable without new hardware.
+      Web-scale is not reachable without a fundamentally different entity
+      representation - a learned or hashed code - which would abandon the
+      gradient-free property that makes the substrate distinctive. That
+      is a genuine fork, not a to-do.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
