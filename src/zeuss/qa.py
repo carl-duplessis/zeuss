@@ -423,10 +423,15 @@ RAW_COHERENCE_FLOOR = 0.5
 # contrast RAW_COHERENCE_FLOOR=0.5 keeps 100% of positives but rejects only
 # 67.5% of negatives - usable, just badly placed.
 #
-# Far more dataset-dependent than COHERENCE_FLOOR: this is an *unnormalised*
-# scale, so it moves with graph density and with `rounds`/`alpha`. Treat 1.7
-# as the measured UMLS value, not a universal constant, and re-calibrate
-# (positives vs no-answer negatives) for a materially different KB.
+# More dataset-dependent than COHERENCE_FLOOR - this is an *unnormalised*
+# scale, so it moves with graph density and with `rounds`/`alpha`. But it
+# travelled better than that warning implied: re-measured on Nations (14
+# entities, a 10x smaller vocabulary, denser still) this same 1.7 scored
+# AUC 0.9699, keeping 90.0% of positives and rejecting 92.5% of negatives.
+# Nations' own optimum is 1.4437, so importing the UMLS constant costs
+# ~1.6 points of balanced accuracy rather than failing. Still worth
+# re-calibrating (positives vs no-answer negatives) for a materially
+# different KB, but 1.7 is a reasonable default rather than a UMLS-only one.
 RAW_REFINED_COHERENCE_FLOOR = 1.7
 
 

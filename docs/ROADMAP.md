@@ -4105,6 +4105,62 @@ in-character, less-certain option.
       proper measurement before anyone relies on either path's route
       *quality* rather than its validity.
 
+## Phase 2 addendum, continued — does any of it transfer? Nations says yes
+
+- [x] **The motivating worry, stated first:** every raw-pipeline result -
+      MRR 0.8371 vs the normalised 0.7449, ~45x faster queries, 33.8x
+      faster chains, `RAW_REFINED_COHERENCE_FLOOR=1.7` - came from exactly
+      one graph, and UMLS is peculiar (135 entities, mean degree ~155,
+      multi-parent taxonomy). This project's most-repeated lesson is that
+      single-source findings do not transfer: v0.46's crosstalk fix died
+      on real data, Phase 2's hyperparameter fix died on real data, and
+      the candidate-scoping speedup was mispredicted earlier in this very
+      addendum by assuming one subsystem's ratio carried to another.
+- [x] **Nations is a genuinely different regime, not a re-run.** 14
+      entities (a 10x smaller vocabulary than UMLS), 55 relations, 1592
+      train triples, mean degree ~227 (denser still). Shard counts are 40
+      normalised against 4 raw, where UMLS was 131 against 14 - so much
+      less shard-count advantage available. Fetched from the pykeen
+      mirror; the `datasets-knowledge-embedding` URLs this project used
+      previously now 404.
+      - Deliberately **not** compared against a published baseline:
+        Nations' citable numbers were withdrawn by ConvE's own author over
+        inverse-relation test leakage, which this project already
+        recorded. The raw-vs-normalised question is internal and
+        unaffected by that flaw.
+- [x] **It transfers, in direction if not in magnitude** (n=30 test
+      triples, pooled head+tail, same protocol as UMLS; 14 entities means
+      chance MRR ~0.232, so read these against that, not against zero):
+      - normalised generalising: MRR 0.5223, H@1 0.3167, H@3 0.6500,
+        H@10 0.8833, 0.899s/query
+      - raw generalising: **MRR 0.6082, H@1 0.3500, H@3 0.8333, H@10
+        0.9667, 0.061s/query**
+      - **+0.0859 MRR and 14.8x faster** - same sign on both axes as UMLS
+        (+0.0922 and ~45x). The smaller speedup is exactly what the
+        shard-count story predicts: 40->4 shards is a smaller win than
+        131->14.
+- [x] **The floor transferred *better* than its own caveat predicted, and
+      that is worth recording as a corrected expectation.**
+      `RAW_REFINED_COHERENCE_FLOOR`'s comment warns it is an unnormalised
+      scale that moves with density and vocabulary, so the prediction was
+      that 1.7 would be badly placed on a graph with a 10x smaller
+      vocabulary. Measured on Nations: AUC 0.9699, and the UMLS constant
+      keeps 90.0% of positives while rejecting 92.5% of negatives
+      (balanced accuracy 0.913). Nations' own optimum is 1.4437 (0.929) -
+      so the imported constant costs about 1.6 points of balanced
+      accuracy. The caveat stays (it is still a scale-dependent constant
+      and a materially different KB should re-calibrate), but "expect it
+      to move a lot" was too pessimistic.
+- [x] **One cost moved the wrong way and is worse here than on UMLS.** Raw
+      setup was 294.8s against the normalised path's 9.2s, versus UMLS's
+      182s/8.5s. With only 14 entities but `dim=131072`, refinement is
+      dominated by dimension rather than entity count, and Nations' 4
+      shards give far less per-query saving to amortise it against.
+      Break-even is roughly 350 queries here, against ~43 on UMLS - so on
+      a small, dense graph the raw path is only worth it for
+      query-heavy workloads, and `dim` should probably be scaled down with
+      the shard size rather than copied from the UMLS configuration.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
