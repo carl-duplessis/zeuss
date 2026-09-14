@@ -4528,15 +4528,36 @@ in-character, less-certain option.
       live inside the substrate. A conventional rule engine over a
       retriever reaches the same answer, which is the concrete form of the
       question `VISION.md` has carried since the beginning.
-- [ ] **What would still overturn this**, kept open honestly: a case where
-      the constraint is *soft* (not a hard veto) **and** genuinely
-      informative, so that the cross-candidate interaction JOINT uniquely
-      expresses - penalising candidate A moves where `z` settles and so
-      changes candidate B's score - has something real to propagate. Both
-      regimes tested here fell outside that: decisive constraints make the
-      interaction irrelevant, and the noisy ones carried no signal to
-      propagate. That is a narrow and specific remaining window, not a
-      general reprieve.
+- [x] **The one remaining window was probed, and it closed in the opposite
+      direction from the prediction.** The window was: a constraint *soft*
+      enough that the cross-candidate interaction JOINT uniquely expresses
+      (penalising A moves where `z` settles, changing B's score) has room
+      to act - unlike a hard veto, which `exp(-large)` zeroes for both
+      methods. Swept `Rule` weight from 0.25 to 16 on the same socrates
+      case, 60 seeds each:
+      | weight | BASELINE | JOINT | POST_FILTER | delta | disagree |
+      |---|---|---|---|---|---|
+      | 0.25 | 29 | **37** | **60** | **-23** | 23 |
+      | 0.50 | 29 | 53 | 60 | -7 | 7 |
+      | 1.00-16.0 | 29 | 60 | 60 | +0 | 0 |
+      In precisely the soft regime predicted to favour JOINT, **JOINT is
+      markedly worse** - 37/60 against POST_FILTER's perfect 60/60. The
+      prediction was recorded in advance and was wrong in direction; the
+      sweep was designed to detect either outcome.
+- [x] **Mechanism, and it is the same interaction - pointing the other
+      way.** POST_FILTER applies `exp(-penalty)` directly to a candidate's
+      score, so even a weak penalty deterministically flips a narrow
+      ranking gap. JOINT folds the penalty into a `Landscape` weight and
+      then *settles*, where `z` is pulled by every attractor at once - so
+      softly down-weighting one barely moves it and the correction is
+      diluted. The cross-candidate interaction attenuates weak evidence
+      rather than amplifying it.
+- [x] **Final form of the result: POST_FILTER weakly dominates.** Equal
+      when constraints are decisive, strictly better when they are soft.
+      There is no measured regime in which embedding the logic inside the
+      substrate helps, and one in which it actively hurts. That is a
+      stronger conclusion than the tie reported before the sweep, and it
+      closes the question `VISION.md` opened.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
