@@ -418,6 +418,7 @@ def ask_raw(
     subject_vector=None,
     coherence_floor: float = RAW_COHERENCE_FLOOR,
     candidate_names: Any = None,
+    entity_vectors: Callable[[str], Any] | None = None,
 ) -> Answer:
     """Like `ask`, but reads from a *raw* (pre-normalisation) memory via
     `Ontology.step_raw` instead of `step` - the fix for v0.39's old,
@@ -486,11 +487,39 @@ def ask_raw(
     Passing each shard's own entity set here restores `O(N)` query cost
     to match `O(N)` memory - see `docs/ROADMAP.md`'s "Phase 2 addendum,
     continued" for the measured before/after.
+
+    ``entity_vectors`` (optional, default `Ontology.entity`): scores every
+    *candidate* through this instead - the raw pipeline's counterpart to
+    the parameter `ask`/`ask_sharded` already carry, and the third leg of
+    a generalising raw query. As `Ontology.refine_entity_vectors`'
+    docstring establishes at length, overriding only the probe while
+    candidates are still scored against `entity()` measurably starves the
+    query of most of its effect: memory, probe *and* candidate scoring all
+    have to agree. The full generalising raw form is therefore
+    ``ask_raw(onto, onto.ground_raw_refined().raw, e, r,
+    subject_vector=onto.entity_refined(e),
+    entity_vectors=onto.entity_refined)`` - or the
+    `ground_sharded_raw_refined` shards for a KB too large for one bundle.
+    ``None`` (default) is an exact no-op.
+
+    **Warning - ``known``/``coherence_floor`` are not calibrated for the
+    generalising raw path.** With ``entity_vectors=onto.entity_refined``
+    the coherence scale changes completely: refined vectors are
+    deliberately correlated, so similarities are not bounded near 1.0 the
+    way this function's ordinary (near-orthogonal) path is. Measured on
+    real UMLS: coherence averaged 7.875 for known-true answers (min
+    1.188), while wrong answers reached 3.2732 - overlapping, and every
+    value far above `RAW_COHERENCE_FLOOR`, which therefore marks
+    everything ``known``. Accuracy on that path is excellent (see
+    `docs/ROADMAP.md`: MRR 0.8371 vs the normalised path's 0.7449) - it is
+    specifically the *confidence* read-out that does not transfer. Use the
+    ranking, not ``known``, until a floor is calibrated for it.
     """
+    lookup = onto.entity if entity_vectors is None else entity_vectors
     subject_hv = onto.entity(subject) if subject_vector is None else subject_vector
     residue = onto.step_raw(memory_raw, subject_hv, relation)
     names = onto.entity_names() if candidate_names is None else list(candidate_names)
-    scores = [raw_similarity(residue, onto.entity(name)) for name in names]
+    scores = [raw_similarity(residue, lookup(name)) for name in names]
     order = sorted(range(len(names)), key=lambda i: scores[i], reverse=True)
     ranked = [(names[i], float(scores[i])) for i in order]
     probs = softmax([beta * scores[i] for i in order])

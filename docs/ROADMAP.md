@@ -3914,6 +3914,69 @@ in-character, less-certain option.
       subsystem's speedup by analogy to another's, without checking that
       ratio, was the error here.
 
+## Phase 2 addendum, continued — the raw pipeline's generalising path: faster AND more accurate, but its confidence signal does not transfer
+
+- [x] **Filled the empty corner of the grounding matrix.** `ground` /
+      `ground_refined` / `ground_raw` existed; `ground_raw_refined` did
+      not, and `ask_raw` had `subject_vector` but no `entity_vectors` - so
+      the raw pipeline could only ever do two of the three things
+      `refine_entity_vectors`' docstring says a generalising query needs
+      (memory, probe, candidate scoring all agreeing). Added
+      `ground_raw_refined`, `ground_sharded_raw`,
+      `ground_sharded_raw_refined`, and `ask_raw`'s `entity_vectors`, all
+      additive with exact-no-op defaults, 5 new tests.
+- [x] **`shard_size` defaults to 800 here, not `ground_sharded`'s 80,
+      because the two paths are limited by different things.** 80 is
+      v0.39's measured single-bundle reliability ceiling, which provably
+      does not respond to `dim`. The raw path has no such fixed ceiling -
+      capacity scales with `dim` - so a shard can be an order of magnitude
+      larger if `dim` scales with it. On real UMLS that is 14 shards
+      instead of 131, and shard count is the dominant per-query cost for
+      any `*_sharded` call.
+- [x] **Measured on real UMLS, same n=100 sample and pooled head+tail
+      protocol as the ConvE benchmark, so the numbers are directly
+      comparable - and it improved on BOTH axes at once:**
+      - raw generalising: **MRR 0.8371, Hits@1 0.7600, Hits@3 0.9000,
+        Hits@10 0.9650, 0.55s/query**
+      - normalised generalising (previous): MRR 0.7449, Hits@1 0.6650,
+        Hits@3 0.7900, Hits@10 0.8950, ~22-27s/query
+      - ConvE published: MRR 0.9400, Hits@1 0.9200, Hits@3 0.9600,
+        Hits@10 0.9900
+      So ~45x faster *and* roughly half the remaining MRR gap to ConvE
+      closed, with Hits@10 now 0.965 against ConvE's 0.99. The accuracy
+      gain is mechanistically consistent with v0.39's own finding rather
+      than a surprise: the normalised path's per-element projection
+      discards amplitude information the raw path retains.
+- [x] **Cost moved rather than vanished, stated plainly.** Setup is much
+      more expensive at `dim=131072`: refinement 899s (vs 36s at
+      `dim=8192`) plus 149s grounding, ~0.85GB RSS. Queries are ~45x
+      cheaper. Break-even against the normalised path is roughly 43
+      queries; past that the raw path wins on total wall-clock too, and
+      the advantage grows with query count. For one-shot use on a large
+      KB the normalised path may still be the right choice.
+- [x] **The honest problem: the confidence signal does not transfer to
+      this path, and that is the capability the whole differentiator story
+      rests on.** Measured rather than assumed (the run deliberately
+      calibrated instead of trusting the constant): coherence for
+      known-true answers averaged **7.875** (min 1.188) - nothing like the
+      ordinary raw path's ~1.0, because refined vectors are deliberately
+      correlated so similarities are not bounded the way near-orthogonal
+      ones are. `RAW_COHERENCE_FLOOR = 0.5` therefore marks *everything*
+      `known` on this path and is useless. Worse, the two wrong answers in
+      the sample scored up to 3.2732, **overlapping** the correct range's
+      1.188 minimum. Only n=2 negatives (the answer was a known fact
+      198/200 times), so this is a warning rather than a verdict - but the
+      `known` flag on the raw generalising path is currently unusable and
+      must not be relied on. Calibrating a floor for it needs a sample
+      deliberately enriched for negatives, the same way the low-degree
+      sampling trick was used for the normalised path.
+- [x] **Not done, deliberately:** no `ask_sharded_raw`/`chain_sharded_raw`
+      was added - the cross-shard max-coherence loop stayed in the
+      benchmark script rather than becoming API surface, since the
+      confidence-signal problem above means the natural `known`-based
+      shard selection is not yet trustworthy on this path. Worth adding
+      once a floor is calibrated, not before.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

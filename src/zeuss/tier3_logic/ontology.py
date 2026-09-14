@@ -1148,6 +1148,78 @@ class Ontology:
             mem.add(self._triple_vector(*t))
         return mem
 
+    def ground_raw_refined(self) -> IncrementalMemory:
+        """`ground_raw()` built from `entity_refined()` vectors - the
+        generalising counterpart of the raw pipeline, completing the
+        matrix that `ground`/`ground_refined`/`ground_raw` left with an
+        empty corner.
+
+        Pair with `qa.ask_raw(..., subject_vector=onto.entity_refined(e),
+        entity_vectors=onto.entity_refined)`. The same three-way
+        consistency `ground_refined`'s docstring insists on applies here
+        and for the identical reason - memory, probe *and* candidate
+        scoring must all use refined vectors, or most of the
+        generalisation benefit is measurably lost.
+
+        Note the practical constraint the raw pipeline brings with it:
+        capacity needs `dim` roughly proportional to the bundle's triple
+        count, and the entity codebook then costs
+        `entities x dim x 16` bytes. That is fine for a small-vocabulary
+        graph (real UMLS: 135 entities, so even `dim=131072` is ~283MB)
+        but it is why a large KB wants `ground_sharded_raw_refined`
+        instead of one bundle."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        mem = IncrementalMemory(dim=self.dim)
+        for t in self.triples:
+            mem.add(self._triple_vector_refined(*t))
+        return mem
+
+    def ground_sharded_raw(self, shard_size: int = 800) -> list:
+        """The raw counterpart to `ground_sharded` - a list of raw
+        pre-normalisation memories (each an `IncrementalMemory.raw`
+        array), one per shard.
+
+        ``shard_size`` defaults to 800 rather than `ground_sharded`'s 80
+        because the two are limited by *different* things. The normalised
+        path's 80 is v0.39's measured single-bundle reliability ceiling,
+        which does not respond to `dim`. The raw path has no such fixed
+        ceiling - its capacity scales with `dim` (that is the whole point
+        of `ground_raw`), so a shard can be an order of magnitude larger
+        provided `dim` is scaled with it (~164x the shard size for the
+        ~5x known/unknown margin measured in `docs/ROADMAP.md`).
+
+        That difference is worth real shard-count reductions: real UMLS
+        (10,432 triples) needs 131 shards at the normalised path's 80, but
+        only 14 here at 800 - and shard count is the dominant per-query
+        cost for `ask_sharded`/`chain_sharded`, which loop over every
+        shard at every hop."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        out = []
+        for start in range(0, len(self.triples), shard_size):
+            mem = IncrementalMemory(dim=self.dim)
+            for t in self.triples[start : start + shard_size]:
+                mem.add(self._triple_vector(*t))
+            out.append(mem.raw)
+        return out
+
+    def ground_sharded_raw_refined(self, shard_size: int = 800) -> list:
+        """`ground_sharded_raw` built from `entity_refined()` vectors -
+        the generalising, shard-scaled corner of the raw pipeline. See
+        `ground_raw_refined` for the three-way consistency requirement and
+        `ground_sharded_raw` for why ``shard_size`` defaults far above the
+        normalised path's 80."""
+        if not self.triples:
+            raise ValueError("ontology is empty; add() some triples first")
+        out = []
+        for start in range(0, len(self.triples), shard_size):
+            mem = IncrementalMemory(dim=self.dim)
+            for t in self.triples[start : start + shard_size]:
+                mem.add(self._triple_vector_refined(*t))
+            out.append(mem.raw)
+        return out
+
     def ground_refined(self):
         """Like `ground()`, but built from `entity_refined()` vectors
         instead of `entity()` - the refined-universe counterpart a

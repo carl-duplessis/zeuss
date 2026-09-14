@@ -126,3 +126,62 @@ def test_ask_raw_candidate_names_gives_quadratic_scaling_query_cost_relief():
     answer = ask_raw(onto, memory_raw, "subj_0", "is_a", candidate_names=wrong_scope)
     assert answer.answer != "filler_0"
     assert answer.answer in wrong_scope
+
+
+def test_ground_raw_refined_differs_from_ground_raw_after_refinement():
+    """The empty corner of the ground/ground_refined/ground_raw matrix,
+    now filled: the raw pipeline's generalising counterpart. Must actually
+    carry the refined signal, not silently duplicate ground_raw()."""
+    from zeuss.tier2_substrate.hypervectors import similarity
+
+    onto = demo_ontology()
+    onto.refine_entity_vectors()
+    plain = onto.ground_raw().raw
+    refined = onto.ground_raw_refined().raw
+    assert similarity(plain, refined) < 0.999
+
+
+def test_ground_raw_refined_equals_ground_raw_without_refinement():
+    """entity_refined() falls back to entity() for anything never refined,
+    so on an un-refined ontology the two grounding paths must agree
+    exactly - the same safe-fallback contract entity_refined() promises."""
+    from zeuss.tier2_substrate.hypervectors import similarity
+
+    onto = demo_ontology()
+    plain = onto.ground_raw().raw
+    refined = onto.ground_raw_refined().raw
+    assert similarity(plain, refined) > 0.9999
+
+
+def test_ground_sharded_raw_splits_without_losing_triples():
+    onto = demo_ontology()
+    shards = onto.ground_sharded_raw(shard_size=3)
+    assert len(shards) == -(-len(onto.triples) // 3)
+    assert all(s.shape == (onto.dim,) for s in shards)
+
+
+def test_ask_raw_entity_vectors_is_the_third_leg_of_a_generalising_query():
+    """refine_entity_vectors' docstring establishes that a generalising
+    query needs memory, probe AND candidate scoring to agree. ask_raw had
+    subject_vector but no entity_vectors, so the raw pipeline could only
+    ever do two of the three. This checks the parameter actually reaches
+    candidate scoring - overriding it changes the reported coherence."""
+    onto = demo_ontology()
+    onto.refine_entity_vectors()
+    memory = onto.ground_raw_refined().raw
+    probe_only = ask_raw(onto, memory, "socrates", "is_a",
+                         subject_vector=onto.entity_refined("socrates"))
+    all_three = ask_raw(onto, memory, "socrates", "is_a",
+                        subject_vector=onto.entity_refined("socrates"),
+                        entity_vectors=onto.entity_refined)
+    assert probe_only.coherence != all_three.coherence
+
+
+def test_ask_raw_entity_vectors_defaults_to_an_exact_no_op():
+    onto = demo_ontology()
+    onto.refine_entity_vectors()
+    memory = onto.ground_raw().raw
+    default = ask_raw(onto, memory, "socrates", "is_a")
+    explicit = ask_raw(onto, memory, "socrates", "is_a", entity_vectors=onto.entity)
+    assert default.answer == explicit.answer
+    assert default.coherence == explicit.coherence
