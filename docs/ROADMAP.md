@@ -4447,6 +4447,96 @@ in-character, less-certain option.
       multi-valued relations. UMLS is literally a semantic-type network,
       so the `isa` hierarchy already in the data can supply them. That is
       the version of this test worth running.
+- [x] **Ran it. Third constraint source, third failure - and a pre-check
+      caught it before the expensive part.** Type constraints from the
+      `isa` hierarchy are near-inert on UMLS: measuring selectivity first
+      showed they exclude **0-2 of 135 entities for seven of the ten
+      densest relations**, with only `issue_in`, `interacts_with` and
+      `produces` reaching ~26%. The cause is structural - 135 entities
+      averaging 4.3 types each in a hierarchy where nearly everything
+      rolls up to `entity`, so almost everything is type-compatible with
+      almost everything.
+      Run on those three most-selective relations anyway (n=20): BASELINE
+      2/20, JOINT 2/20, POST_FILTER 2/20, **0 disagreements** - and the
+      decisive diagnostic, added precisely so an inert result would still
+      be interpretable: **the constraint vetoed retrieval's own top-1 on
+      0/20 queries.** It never fired once. Mechanism confirmed: retrieval
+      is already biased toward entities that co-occur with the relation,
+      which are exactly the type-compatible ones, so constraint and
+      evidence never disagree and there is nothing to arbitrate.
+- [x] **Three independent constraint sources - cardinality exclusions,
+      sound-relation exclusions, `isa` type constraints - all unsound or
+      inert, for one shared reason.** That points at the dataset rather
+      than the mechanism: UMLS is small (135 entities) and densely
+      interconnected (mean degree ~155), and in such a graph any
+      constraint *derived from the graph's own structure* is necessarily
+      weak, because almost everything is compatible with almost
+      everything. The logic has nothing to veto.
+- [ ] **Next, and deliberately NOT dataset-hunting.** Searching datasets
+      until one shows the effect is looking for a favourable case, not
+      running a test. "Does joint optimisation differ from sequential at
+      all" is a *mechanism* question, answerable far more cheaply on the
+      one case already proven to fire: v0.37's own `axiom_bias` validation
+      (`socrates is_a` both `human` and `star`, raw resonance near a coin
+      flip, the rule corrected 4 of 10 seeds). That case establishes the
+      constraint engages and changes outcomes - but it only ever compared
+      bias against *no* bias, never against the same bias applied as a
+      post-hoc re-rank. If JOINT == POST_FILTER on a case constructed to
+      favour JOINT, the unification has no mechanism-level advantage and
+      the thesis is refuted on the merits. Only if JOINT wins is it worth
+      acquiring a dataset with the properties it needs - specified in
+      advance (sparse, strongly typed, genuine disjointness; WN18RR at
+      mean degree ~4 against UMLS's ~155 is the obvious candidate) rather
+      than shopped for.
+
+## Phase 2 addendum — the unification thesis, answered
+
+- [x] **Ran the mechanism test on the one case proven to fire.** v0.37's
+      own `axiom_bias` validation (`socrates is_a` both `human` and
+      `star`, with `walks_on earth` supplying a `Rule("walks_on_earth",
+      "not_star")`) was built by this project specifically to demonstrate
+      that a logical constraint can rescue a retrieval near a coin flip.
+      It only ever compared bias against *no* bias. This adds the third
+      condition it never measured - the same bias applied as a post-hoc
+      re-rank, which is all a rule engine over a retriever can do - at 60
+      seeds rather than 10.
+- [x] **Every precondition was met, and the result is unambiguous:**
+      | condition | correct | accuracy |
+      |---|---|---|
+      | BASELINE (no logic) | 29/60 | 0.4833 |
+      | JOINT (`axiom_bias`, inside the landscape) | **60/60** | **1.0000** |
+      | POST_FILTER (same bias, post-hoc re-rank) | **60/60** | **1.0000** |
+      Baseline genuinely near a coin flip, enormous headroom, and the
+      constraint **vetoed retrieval's own top-1 on 31/60 seeds** - it
+      demonstrably engaged. **JOINT and POST_FILTER disagreed on 0/60.**
+      Unification delta: **+0**.
+- [x] **This is a refutation on the merits, not another inconclusive
+      run.** On a case constructed by this project to favour exactly this
+      mechanism, joint optimisation has **no** advantage over applying the
+      same logic sequentially.
+- [x] **Two regimes, one conclusion.** Taken with the earlier UMLS runs:
+      when a constraint is *decisive*, JOINT and POST_FILTER zero out the
+      same candidate and agree perfectly (0/60 here); when it is *soft or
+      noisy*, they genuinely diverge (24/40 on mined UMLS constraints) but
+      the divergence is symmetric noise with a net delta of exactly zero.
+      They are not the same operation - they simply never differ in a way
+      that helps.
+- [x] **What survives, stated precisely: the logic layer earns its keep;
+      the unification does not.** `axiom_bias` is a genuinely valuable
+      mechanism - 48% to 100% is a large, real effect and nothing here
+      diminishes it. What fails is the *architectural* claim that it must
+      live inside the substrate. A conventional rule engine over a
+      retriever reaches the same answer, which is the concrete form of the
+      question `VISION.md` has carried since the beginning.
+- [ ] **What would still overturn this**, kept open honestly: a case where
+      the constraint is *soft* (not a hard veto) **and** genuinely
+      informative, so that the cross-candidate interaction JOINT uniquely
+      expresses - penalising candidate A moves where `z` settles and so
+      changes candidate B's score - has something real to propagate. Both
+      regimes tested here fell outside that: decisive constraints make the
+      interaction irrelevant, and the noisy ones carried no signal to
+      propagate. That is a narrow and specific remaining window, not a
+      general reprieve.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
