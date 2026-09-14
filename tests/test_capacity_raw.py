@@ -200,3 +200,58 @@ def test_raw_refined_coherence_floor_sits_between_the_measured_classes():
     # Measured UMLS maxima/minima the threshold was chosen to separate.
     assert RAW_REFINED_COHERENCE_FLOOR > 0.5799   # max nonexistent-subject negative
     assert RAW_REFINED_COHERENCE_FLOOR < 2.6080   # p05 of positives
+
+
+def test_chain_sharded_raw_walks_the_same_chain_as_the_normalised_path():
+    """The raw pipeline's multi-hop counterpart. At a scale where both
+    paths are reliable they must agree on the walk itself - the raw path
+    exists to change shard economics and capacity, not to reach different
+    conclusions."""
+    from zeuss.qa import chain_sharded, chain_sharded_raw
+
+    onto = demo_ontology()
+    normalised = onto.ground_sharded(shard_size=80, skip_irregular=False)
+    raw = onto.ground_sharded_raw(shard_size=80)
+    a = chain_sharded(onto, normalised, "socrates", "is_a")
+    b = chain_sharded_raw(onto, raw, "socrates", "is_a")
+    assert [n for n, _ in a.hops] == [n for n, _ in b.hops] == ["human", "mortal", "thing"]
+
+
+def test_chain_sharded_raw_cumulative_grows_rather_than_decays():
+    """Pins the documented wrinkle rather than leaving it to surprise a
+    caller: raw coherence is not bounded by 1, so Chain's inherited
+    multiplicative convention *grows* across hops here instead of decaying.
+    It is retained only so `cumulative` means the same thing on every path
+    (the product of per-hop coherences); min_hop_coherence() is the signal
+    to actually use."""
+    from zeuss.qa import chain_sharded_raw
+
+    onto = demo_ontology()
+    raw = onto.ground_sharded_raw(shard_size=80)
+    c = chain_sharded_raw(onto, raw, "socrates", "is_a")
+    assert len(c.hops) == 3
+    assert c.cumulative[-1] > c.cumulative[0]          # grows, unlike the normalised path
+    assert c.min_hop_coherence() == min(x for _n, x in c.hops)
+
+
+def test_chain_sharded_raw_rejects_mismatched_shard_entities():
+    from zeuss.qa import chain_sharded_raw
+
+    onto = demo_ontology()
+    raw = onto.ground_sharded_raw(shard_size=80)
+    try:
+        chain_sharded_raw(onto, raw, "socrates", "is_a", shard_entities=[{"socrates"}] * (len(raw) + 1))
+        assert False, "expected a ValueError"
+    except ValueError:
+        pass
+
+
+def test_chain_sharded_raw_requires_memories():
+    from zeuss.qa import chain_sharded_raw
+
+    onto = demo_ontology()
+    try:
+        chain_sharded_raw(onto, [], "socrates", "is_a")
+        assert False, "expected a ValueError"
+    except ValueError:
+        pass

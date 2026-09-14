@@ -4057,6 +4057,54 @@ in-character, less-certain option.
       on synthetic graphs of controlled density, not on a real sparse KB -
       UMLS is dense, so it is precisely the dataset this cannot help.
 
+## Phase 2 addendum, continued — chains on raw shards: 33.8x, and a difference that is not an error
+
+- [x] **`qa.chain_sharded_raw`**: the raw pipeline's multi-hop
+      counterpart, built on `ask_raw` the way `chain_sharded` is built on
+      `ask`. Needed because `chain_sharded` reads normalised memories via
+      `onto.step`/`_cleanup` and simply cannot consume raw shards.
+      ``entity_vectors`` drives both candidate scoring *and* the vector
+      each hop re-enters with, so a generalising raw chain stays inside
+      one consistent refined universe rather than collapsing back to raw
+      vectors mid-walk.
+- [x] **Measured on real UMLS `isa`, 5 chains, `max_hops=3`: 323.4s ->
+      9.6s, a 33.8x speedup** (normalised: 131 shards at the mandatory
+      `shard_size=80`, `dim=8192`; raw: 14 shards at `shard_size=800`,
+      `dim=131072`). This is the lever candidate scoping could not pull -
+      that bought only 1.3-1.9x because UMLS is small and dense, whereas
+      shard count is the cost that actually dominates a chain, paid once
+      per hop.
+      - Decomposes roughly as expected rather than being unexplained:
+        ~9.4x from the shard-count reduction (131/14) and the remainder
+        from `ask_raw` skipping `dimensional_collapse`+`settle` entirely,
+        which an earlier scoped-vs-raw comparison independently put at
+        ~5x. Note the comparison varies shard size, `dim` and pipeline
+        together, so 33.8x belongs to these two configurations, not to
+        any single one of those factors.
+      - Grounding cost moves the other way (8.5s -> 182.3s) and is paid
+        once; at these per-chain costs it repays after ~1 chain.
+- [x] **All 10 chains valid on both paths - but 0/5 walked the same route,
+      and that is not a correctness failure.** Every hop on both sides is
+      a genuinely stored `isa` edge (checked against `train.tsv`, not
+      eyeballed). UMLS's `isa` is multi-parent - Phase 0(b) already found
+      129/133 subjects have several real parents - so e.g. `receptor isa
+      physical_object` (normalised) and `receptor isa entity` (raw) are
+      *both* true stored facts. The paths select different legitimate
+      parents; neither is wrong.
+- [x] **One qualitative difference observed but deliberately NOT claimed
+      as established.** 4 of 5 raw chains terminate at `entity`, UMLS's
+      taxonomy root, giving shorter and more root-ward walks than the
+      normalised path's more gradual climbs - which for a taxonomy is
+      arguably less informative even though every hop is true. The
+      obvious hypothesis (a pull toward high-degree hubs, since frequently
+      appearing entities occur in more shards) is only weakly supported:
+      mean degree of hop targets was 166.9 raw versus 132.9 normalised,
+      on just 11 hops each, and `entity` (degree 160) is not even the
+      highest-degree node in the graph (`physiologic_function` is 418).
+      Suggestive, far too small to call a systematic bias, and worth a
+      proper measurement before anyone relies on either path's route
+      *quality* rather than its validity.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

@@ -895,6 +895,94 @@ def chain_sharded(
     )
 
 
+def chain_sharded_raw(
+    onto: Ontology,
+    memories_raw: list,
+    subject: str,
+    relation: str,
+    max_hops: int = 6,
+    beta: float = 12.0,
+    coherence_floor: float = RAW_COHERENCE_FLOOR,
+    prior_coherence: float = 1.0,
+    shard_entities: list | None = None,
+    entity_vectors: Callable[[str], Any] | None = None,
+) -> Chain:
+    """`chain_sharded` over *raw* (pre-normalisation) shards - the raw
+    pipeline's multi-hop counterpart, built on `ask_raw` the same way
+    `chain_sharded` is built on `ask`.
+
+    The motivation is shard count, which is the dominant per-hop cost of
+    any sharded chain: the normalised path is pinned to `shard_size=80` by
+    v0.39's fixed single-bundle ceiling, while the raw path's capacity
+    scales with `dim` and so tolerates ~10x larger shards. On real UMLS
+    that is 14 shards against 131, and a chain pays that difference once
+    per hop rather than once per query. Measured numbers in
+    `docs/ROADMAP.md`.
+
+    For a *generalising* raw chain, pass ``entity_vectors=onto.
+    entity_refined`` (which is used both for candidate scoring and for the
+    vector each hop re-enters the continuum with, keeping the whole walk
+    inside one consistent refined universe) together with shards from
+    `Ontology.ground_sharded_raw_refined`, and
+    ``coherence_floor=RAW_REFINED_COHERENCE_FLOOR`` - the ordinary
+    `RAW_COHERENCE_FLOOR` default sits far too low on that scale.
+
+    **``Chain.cumulative`` is even less meaningful here than on the
+    normalised path - use `Chain.min_hop_coherence()`.** Raw coherence is
+    not bounded by 1 (real UMLS generalising queries measured 1.4-16), so
+    the inherited multiplicative convention *grows* across hops instead of
+    decaying. It is kept only so `Chain`'s contract means the same thing
+    everywhere (the product of per-hop coherences); it is not a confidence.
+    `docs/ROADMAP.md` already establishes that the weakest hop is the
+    signal to use even on the normalised path, where the product at least
+    decays.
+
+    ``Chain.resonance_coherence`` is left at ``0.0``: it is a
+    normalised-path construction (interfering an uncollapsed composition
+    against the final entity) whose scale has not been validated for raw
+    residues, and inventing a number here would be worse than reporting
+    none.
+
+    **Expect a different - not a wrong - route than `chain_sharded`.**
+    Measured on real UMLS `isa`, the two paths agreed on 0 of 5 chains
+    while every hop of all 10 was a genuinely stored edge: UMLS's `isa` is
+    multi-parent, so the paths simply select different legitimate parents.
+    The raw path was additionally observed to finish at the taxonomy root
+    more often (4/5), i.e. shorter, more root-ward walks; whether that
+    reflects a real pull toward high-degree entities is unmeasured and
+    explicitly not claimed - see `docs/ROADMAP.md`."""
+    if not memories_raw:
+        raise ValueError("chain_sharded_raw requires at least one memory - see ground_sharded_raw")
+    if shard_entities is not None and len(shard_entities) != len(memories_raw):
+        raise ValueError("shard_entities must be the same length as memories_raw")
+
+    lookup = onto.entity if entity_vectors is None else entity_vectors
+    ent = lookup(subject)
+    visited = {subject}
+    hops: list[tuple[str, float]] = []
+    cumulative: list[float] = []
+    running = prior_coherence
+    for _ in range(max_hops):
+        best: Answer | None = None
+        for i, memory in enumerate(memories_raw):
+            answer = ask_raw(
+                onto, memory, subject, relation, beta=beta, subject_vector=ent,
+                coherence_floor=coherence_floor,
+                candidate_names=None if shard_entities is None else shard_entities[i],
+                entity_vectors=entity_vectors,
+            )
+            if best is None or answer.coherence > best.coherence:
+                best = answer
+        if best.coherence < coherence_floor or best.answer in visited:
+            break
+        running *= best.coherence
+        hops.append((best.answer, best.coherence))
+        cumulative.append(running)
+        visited.add(best.answer)
+        ent = lookup(best.answer)  # collapse -> re-enter the continuum clean
+    return Chain(start=subject, relation=relation, hops=hops, cumulative=cumulative)
+
+
 def entails(onto: Ontology, memory, subject: str, relation: str, target: str) -> Verdict:
     """Yes/no: does ``subject`` reach ``target`` through ``relation`` (any hops)?"""
     c = chain(onto, memory, subject, relation)
