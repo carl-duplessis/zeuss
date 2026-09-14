@@ -117,15 +117,25 @@ Results that hold up, each measured rather than argued. Full derivations, the
 methodology, and the predictions that turned out wrong are in
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-**Why hyperdimensional bundling capacity ignores dimension.** The most
-generalisable result here, and one this project itself got wrong for eight
-versions. `bundle()`/`unbind()` project every element back onto the unit circle;
-that projection is *nonlinear* on a noisy sum, so the **expected** recovered
-similarity is capped by bundle size alone and `dim` only tightens the estimate
-around an already-capped value. Raising `dim` 8× therefore does nothing — exactly
-what was observed and left unexplained for a long time. Reading from the raw,
-un-projected sum restores textbook capacity scaling: correct-vs-wrong separation
-sharpens as `dim` grows.
+**Why a fixed confidence threshold fails on a normalised bundle.** The most
+generalisable result here — and the claim itself was corrected after this repo
+was published, by a follow-up experiment across four VSA flavours.
+`bundle()`/`unbind()` project every element back onto the unit circle. That
+projection is nonlinear on a noisy sum and **caps the absolute recovered
+similarity at a value set by bundle size**: measured flat at ~0.15 (N=32) across
+a 64× sweep of `dim`, where reading the raw un-projected sum gives ~1.0.
+
+What it does **not** do is cap capacity. Crosstalk still falls as `dim` grows, so
+the margin between the correct item and its best competitor improves either way
+(FHRR quantised: 2.3 → 19.6 over the same sweep). The same pattern holds for MAP
+and BSC; for HRR it is provably a non-issue, since unit-norm rescaling is a global
+scalar and cosine similarity is scale-invariant.
+
+So the real failure was a **scale mismatch, not a capacity law**: `COHERENCE_FLOOR`
+is a fixed absolute threshold applied to a quantity whose scale is capped, so
+raising `dim` could never lift it over the bar. An earlier version of this section
+claimed "capacity ignores dimension" — that was wrong, and the measurements
+correcting it live in a separate follow-up study.
 
 **The scale law.** Memory is `entities × dim × 16` bytes, and `dim` tracks *shard*
 size, so `memory × shard_count` is invariant — you can trade memory for latency

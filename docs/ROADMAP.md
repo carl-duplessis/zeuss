@@ -4559,6 +4559,40 @@ in-character, less-certain option.
       stronger conclusion than the tie reported before the sweep, and it
       closes the question `VISION.md` opened.
 
+## Correction (post-publication) — the capacity claim was too strong
+
+- [x] **A follow-up study across four VSA flavours corrected this
+      addendum's headline mechanism.** The claim recorded above - that
+      per-element projection caps *capacity* so `dim` cannot help - is too
+      strong. Measured directly (FHRR, MAP, BSC, HRR; N=32 pairs; `dim`
+      512 -> 32768):
+      - **Absolute** recovered similarity from a quantised bundle IS
+        capped by bundle size: flat at ~0.15 across a 64x `dim` sweep,
+        against ~1.0 when reading the raw accumulator. This part stands,
+        and it is what v0.39 actually observed.
+      - **Discriminability is NOT capped.** Crosstalk still falls as `dim`
+        grows, so the margin between the correct item and its best
+        competitor improves in *both* the quantised and raw cases (FHRR
+        quantised: margin 2.3 -> 19.6 over the same sweep). Established
+        superposition-capacity theory (Frady, Kleyko & Sommer,
+        arXiv:1707.01429) is therefore not contradicted.
+      - HRR shows exactly no quantisation effect (1.00x at every `dim`),
+        which is a correctness check on the experiment rather than a
+        result: unit-norm rescaling is a global scalar and cosine
+        similarity is scale-invariant.
+- [x] **The corrected mechanism is a scale mismatch, not a capacity law.**
+      `COHERENCE_FLOOR` is a *fixed absolute* threshold applied to a
+      quantity whose absolute scale is capped by bundle size - so raising
+      `dim` could never lift a stored fact over the bar, no matter how
+      much discriminability improved. The fix that worked (reading the raw
+      accumulator) worked because it restores *scale*, not because it
+      restores capacity. Every downstream number from the raw pipeline is
+      unaffected; only the explanation changes.
+- [x] **Recorded because the original claim was already public.** The
+      README was corrected in the same change. The hypothesis under test
+      was mine, it was written down in advance, and it was refuted -
+      quantisation does not cap capacity across VSA flavours.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
