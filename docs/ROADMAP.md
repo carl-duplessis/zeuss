@@ -4332,6 +4332,65 @@ in-character, less-certain option.
       gradient-free property that makes the substrate distinctive. That
       is a genuine fork, not a to-do.
 
+## Phase 2 addendum, continued — claim verification, and an uncomfortable assessment
+
+- [x] **Tested the premise of a proposed "verification layer" application
+      before building any of it** (`docs/ADAMAI_SPEC.md` build plan, Phase
+      02). Verification is not ranking: to check a claim `(s, r, o)` you
+      need not score every candidate, you can measure how strongly that
+      one triple resonates with the memory - a primitive never previously
+      tested, and one needing no refinement, so it is cheap. Four claim
+      classes constructed from real UMLS, n=60 each, `dim=131072`, 14 raw
+      shards, max resonance across shards:
+      | class | mean | p05 | p95 |
+      |---|---|---|---|
+      | STORED (a training triple) | **0.9987** | 0.9255 | 1.0797 |
+      | HELD_OUT (true, never stored) | 0.0911 | 0.0532 | 0.1440 |
+      | FALSE (corrupted object) | 0.0908 | 0.0392 | 0.1572 |
+      | ABSENT (nonexistent entity) | 0.0919 | 0.0490 | 0.1554 |
+- [x] **The result is perfect on the wrong half.** STORED vs FALSE:
+      **AUC 1.0000**. STORED vs ABSENT: **AUC 1.0000**. But HELD_OUT vs
+      FALSE: **AUC 0.5061 - a coin flip.** Direct triple resonance
+      verifies stored facts flawlessly and cannot distinguish a
+      true-but-unstored claim from a fabricated one at all.
+- [x] **Why that is the wrong half, stated plainly.** Verification is only
+      interesting for claims *not* already in the knowledge base - if they
+      were, a lookup answers it, and a hash set does the STORED case
+      perfectly at zero memory cost and O(1) time. The case that matters
+      (an unstored claim, e.g. one a language model produced) must route
+      through the generalising path instead, which means it inherits
+      everything already measured there: MRR 0.8371, and no correctness
+      detection. **The proposed verification application therefore does
+      not get a clean win**, and this was established for the cost of one
+      experiment rather than an implementation.
+
+- [ ] **Assessment, recorded as judgement rather than measurement.** The
+      central claim of `VISION.md` - that unifying continuous and discrete
+      computation in one substrate is worth doing - remains unjustified by
+      evidence, and a full session of measurement has made that harder
+      rather than easier to defend. The concrete alternative is a
+      conventional two-system stack: a trained embedding model for
+      generalisation, plus a graph database and rule engine for exact
+      recall and deduction. On every axis measured so far that stack wins:
+      - accuracy: 0.94 (ConvE) vs 0.8371
+      - memory: ~655x cheaper per entity
+      - recall: exact lookup vs 0.9987 resonance
+      - deduction: exact graph traversal vs wave propagation gated by a
+        coherence floor
+      - handoff: an entity id, against this substrate's shared codebook -
+        not obviously harder
+      The strongest remaining argument for unification was continuous
+      uncertainty propagation across the handoff, which `prior_coherence`
+      implements - but `cumulative` was then measured not to be a
+      calibrated confidence, and not comparable across chain lengths, so
+      that benefit is currently unrealised.
+      **This does not prove the unification buys nothing.** It states
+      something narrower and checkable: after this addendum's measurements,
+      *no capability has been demonstrated that a conventional two-system
+      stack would not do better*. That is the question to answer before
+      building anything further on top - it has been open since
+      `VISION.md`, and it is now the load-bearing one.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
