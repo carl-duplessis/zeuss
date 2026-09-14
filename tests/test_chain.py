@@ -227,3 +227,33 @@ def test_min_hop_coherence_does_not_decay_with_chain_length():
     # ...while the weakest-hop signal stays at the scale of a single hop.
     assert c.min_hop_coherence() >= min(c.cumulative)
     assert c.min_hop_coherence() == min(coh for _, coh in c.hops)
+
+
+def test_chain_sharded_shard_entities_matches_unscoped():
+    """chain_sharded's counterpart to ask_sharded's shard_entities: each
+    hop compares against only that shard's own entities instead of the
+    whole ontology's. A chain pays the unscoped cost max_hops times over,
+    not once, so this matters more here than for a single-hop ask. Scoping
+    must not change which chain gets walked - it only removes candidates
+    that shard could never have legitimately supplied."""
+    from zeuss.qa import chain_sharded
+
+    onto = demo_ontology()
+    memories, shard_entities = onto.ground_sharded_with_entities(shard_size=80, skip_irregular=False)
+    unscoped = chain_sharded(onto, memories, "socrates", "is_a")
+    scoped = chain_sharded(onto, memories, "socrates", "is_a", shard_entities=shard_entities)
+
+    assert [n for n, _ in unscoped.hops] == [n for n, _ in scoped.hops] == ["human", "mortal", "thing"]
+    assert unscoped.cumulative == scoped.cumulative
+
+
+def test_chain_sharded_rejects_mismatched_shard_entities_length():
+    from zeuss.qa import chain_sharded
+
+    onto = demo_ontology()
+    memories = onto.ground_sharded(shard_size=80, skip_irregular=False)
+    try:
+        chain_sharded(onto, memories, "socrates", "is_a", shard_entities=[{"socrates"}] * (len(memories) + 1))
+        assert False, "expected a ValueError"
+    except ValueError:
+        pass

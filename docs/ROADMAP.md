@@ -3878,6 +3878,42 @@ in-character, less-certain option.
       confound constant rather than to reason about it - stratify before
       trusting a pooled AUC or accuracy on this data.
 
+## Phase 2 addendum, continued — `chain_sharded` scoping, and a corrected expectation
+
+- [x] **Brought `ask_sharded`'s `shard_entities` candidate scoping to
+      `chain_sharded`**, which had never received it: every hop compared
+      each shard against the *whole* ontology's entity codebook rather
+      than that shard's own. Applied at every hop, `None` default = exact
+      no-op, length-mismatch rejected, and verified not to change which
+      chain gets walked (two new tests, plus confirmed on real UMLS
+      chains).
+- [x] **The measured benefit was far smaller than predicted, and the
+      prediction's stated reasoning was wrong - corrected in the docstring
+      rather than shipped.** The change was justified on the expectation
+      that unscoped comparison was driving `chain_sharded`'s ~70-100s per
+      chain on UMLS, by analogy to the ~16x `ask_sharded` win. Measured:
+      **1.3-1.9x**. The reason is visible in one line of the benchmark -
+      UMLS has 135 entities total and roughly **75 of them appear in every
+      single shard**, because the graph is small and extremely dense
+      (10,432 triples over 135 entities). Scoping 135 -> 75 is a 1.8x
+      candidate reduction, which is almost exactly the speedup observed.
+      The `ask_sharded` case was a genuinely different regime: ~1605
+      entities with ~85 per shard, a 19x reduction.
+- [x] **Consequence worth recording, because it redirects where chain
+      performance work should go:** unscoped candidate comparison is *not*
+      the dominant cost of chaining on a dense small-vocabulary graph like
+      UMLS. The shard count is - 131 shards x a `dimensional_collapse`
+      +`settle` pass, per hop. That is a separate, unsolved problem which
+      this parameter does not address (plausible directions: raw-pipeline
+      grounding to allow far larger shards, or pruning shards that cannot
+      contain the queried subject at all - neither attempted).
+- [x] **General lesson, now stated as a rule rather than rediscovered a
+      fourth time:** the value of candidate scoping is
+      `total_entities / entities_per_shard`, a property of the *graph's*
+      density and vocabulary size, not of the query type. Predicting one
+      subsystem's speedup by analogy to another's, without checking that
+      ratio, was the error here.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

@@ -724,6 +724,7 @@ def chain_sharded(
     shard_weights: list[float] | None = None,
     prior_coherence: float = 1.0,
     coherence_floor: float = COHERENCE_FLOOR,
+    shard_entities: list | None = None,
 ) -> Chain:
     """`chain`, but across several independent memory hypervectors (see
     `Ontology.ground_sharded`/`ask_sharded`) instead of one - at *every*
@@ -770,11 +771,43 @@ def chain_sharded(
     mechanism to `chain_sharded`, not as a separately-validated result.
     ``None`` (default) is an exact no-op, equivalent to every weight
     being ``1.0``.
+
+    ``shard_entities`` (optional, positionally aligned with ``memories``):
+    the same per-shard candidate scoping `ask_sharded` takes, applied at
+    *every* hop - each shard's cleanup compares against only that shard's
+    own entities instead of the whole ontology's. Build it with
+    `Ontology.ground_sharded_with_entities`/`ground_shards_with_entities`,
+    which keep it aligned with the memories they return even when a shard
+    is dropped. ``None`` (default) is an exact no-op.
+
+    A chain pays this comparison cost ``max_hops`` times over rather than
+    once, so the saving compounds - but **how much it saves depends
+    entirely on how much there is to scope away**, and that is a property
+    of the graph, not of chaining. Measured on real UMLS (135 entities,
+    131 shards, but ~75 entities present in *each* shard because the graph
+    is small and extremely dense): only **1.3-1.9x**, because 135 -> 75 is
+    barely a reduction. The same parameter on `ask_sharded` over a
+    sparser, larger-vocabulary ontology (~1605 entities, ~85 per shard -
+    a 19x reduction) was worth ~16x. Expect a real but modest win on dense
+    small-vocabulary graphs and a large one on sparse large-vocabulary
+    ones.
+
+    Correspondingly, unscoped candidate comparison is *not* the dominant
+    cost of chaining on a graph like UMLS - the shard count is (131 shards
+    x a `dimensional_collapse`+`settle` pass, per hop). Reducing that is a
+    separate, unsolved problem; this parameter does not address it.
+
+    Verified to leave the walked chain unchanged (`test_chain_sharded_
+    shard_entities_matches_unscoped`, and on real UMLS chains): scoping
+    only removes candidates that shard could never have legitimately
+    supplied.
     """
     if not memories:
         raise ValueError("chain_sharded requires at least one memory - see Ontology.ground_sharded")
     if shard_weights is not None and len(shard_weights) != len(memories):
         raise ValueError("shard_weights must be the same length as memories")
+    if shard_entities is not None and len(shard_entities) != len(memories):
+        raise ValueError("shard_entities must be the same length as memories")
     ent = onto.entity(subject)
     visited = {subject}
     hops: list[tuple[str, float]] = []
@@ -785,7 +818,10 @@ def chain_sharded(
         best = None
         for i, memory in enumerate(memories):
             residue = onto.step(memory, ent, relation)
-            name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(onto, residue, beta, axiom_bias)
+            name, _ranked, coherence, _conf, _k_live, _eff_dim = _cleanup(
+                onto, residue, beta, axiom_bias,
+                candidate_names=None if shard_entities is None else shard_entities[i],
+            )
             weight = 1.0 if shard_weights is None else shard_weights[i]
             score = coherence * weight
             if best is None or score > best[1]:
