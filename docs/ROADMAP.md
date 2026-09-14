@@ -4391,6 +4391,63 @@ in-character, less-certain option.
       building anything further on top - it has been open since
       `VISION.md`, and it is now the load-bearing one.
 
+## Phase 2 addendum, continued — the unification test could not be run, and why that is the finding
+
+- [x] **Attempted the load-bearing experiment**: does optimising logic and
+      evidence *together* beat applying them in sequence? Three conditions
+      on identical queries and identical constraints - BASELINE (no
+      logic), JOINT (`axiom_bias` enters the `Landscape` before `settle`,
+      so logic shapes the attractor dynamics), POST_FILTER (the same
+      constraint re-ranks the returned list, which is exactly what an
+      embedding model plus a rule engine can do). Predictions were
+      recorded before running.
+- [x] **Run 1, mined constraints across the six densest relations** (2,672
+      triples, 56,403 exclusions): BASELINE 3/40, JOINT 2/40, POST_FILTER
+      2/40. Unification delta exactly **+0**, but JOINT and POST_FILTER
+      **disagreed on 24/40 queries** - the mechanisms genuinely differ,
+      and the difference is symmetric noise carrying no signal. Both fell
+      *below* baseline.
+- [x] **Diagnosed rather than reported as a refutation.**
+      `discover_exclusions`' own docstring states its assumption:
+      relations are "normally single-valued". Measured on UMLS, the six
+      relations used average **3-23 objects per subject** (`affects` 14.6,
+      2% single-valued; `causes` 7.45, 0%). The assumption is flatly false
+      for all of them, so those 56,403 constraints are largely spurious
+      and both conditions were confidently vetoing correct answers. The
+      exact-match metric was also swamped by the same multi-valued
+      structure - baseline scored 7.5% on *stored* facts.
+- [x] **Run 2, restricted to relations where the assumption holds**
+      (`contains` 0.89 single-valued, `conceptual_part_of` 0.73;
+      `ingredient_of` is perfectly single-valued but mined **zero**
+      exclusions). Only **92 sound exclusions over 26 queries** exist in
+      the whole dataset. Killed at 11/26, but unambiguous: **BASELINE,
+      JOINT and POST_FILTER produced identical answers on all 11**, with
+      baseline at 9/11 - ample headroom, and the logic simply never fired.
+- [x] **The finding: joint optimisation was never actually exercised.**
+      The only implemented mechanism for injecting logic into retrieval is
+      **unsound where it is plentiful and inert where it is sound**. So
+      the unification thesis was not tested and defeated - it could not be
+      put to the test with what exists. Three concrete blockers, all
+      measured rather than assumed:
+      1. `axiom_bias_from_exclusions` takes a *single* memory and calls
+         the single-bundle `ask` internally - no sharded counterpart
+         exists, so the logic path has only ever been wired to a bundle
+         v0.39 caps at ~80 triples. It has never run at real scale.
+      2. `discover_exclusions` mines from a cardinality assumption that
+         real relations here violate.
+      3. Where that assumption holds, the relations are too small (9-22
+         subjects) for constraints to fire at all.
+- [ ] **The next experiment is well-defined, and the data supports it.**
+      Use **type/disjointness constraints** rather than cardinality
+      exclusions as the constraint source. Phase 0(c) already validated
+      exactly these on this exact dataset - 16/16 hand-verified injected
+      contradictions caught with 0 false positives - so unlike exclusion
+      mining they are known to work here, and they constrain the *type* of
+      a filler rather than its cardinality, which is sound for
+      multi-valued relations. UMLS is literally a semantic-type network,
+      so the `isa` hierarchy already in the data can supply them. That is
+      the version of this test worth running.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
