@@ -4217,6 +4217,54 @@ in-character, less-certain option.
       calibration was always against answerable-vs-unanswerable, so the
       constant itself is unaffected.
 
+## Phase 2 addendum, continued — the margin hypothesis, refuted twice
+
+- [x] **The idea worth testing after the selective-prediction result.**
+      `coherence` is an *absolute* magnitude - how loud the winning
+      resonance is - and was shown to track "does an answer exist" rather
+      than "is this the right one". `Answer.confidence` (the softmax share
+      over candidates) measures something different: how much louder the
+      winner is *than the alternatives*. A margin is the natural shape for
+      "did I pick correctly among several", so it was plausibly
+      informative exactly where coherence is blind - and it was already
+      sitting in `Answer`, unmeasured. Two hand-built variants were tested
+      alongside it in case the fixed-beta softmax saturates:
+      ``margin_abs = top1 - top2`` and ``margin_rel = (top1 - top2)/top1``.
+- [x] **Refuted on both datasets, and the *pattern* of failure is the
+      finding.** AURC (lower is better), against the same
+      random-abstention control:
+      | signal | UMLS | Nations |
+      |---|---|---|
+      | coherence | **0.2293** | 0.6514 |
+      | RANDOM control | 0.2601 | **0.6047** |
+      | margin_abs | 0.3331 | 0.6967 |
+      | confidence | 0.3362 | 0.6836 |
+      | margin_rel | 0.3511 | 0.7178 |
+      Every margin signal is worse than random on both, and the ordering
+      replicates exactly: **the more margin-like the signal, the worse it
+      does**, with `margin_rel` last on each. UMLS and Nations have base
+      accuracies of 0.7300 and 0.3000 - very different regimes - so a
+      shared monotone ordering is a mechanism rather than noise.
+- [x] **Why margin is not merely uninformative but mildly
+      anti-correlated.** If a small top-1/top-2 gap meant "uncertain,
+      probably wrong", margin would help. On a heavily multi-valued graph
+      it more often means *two genuinely true alternatives are competing* -
+      which makes the query easy in truth terms while looking hard in
+      margin terms. Ranking by margin therefore preferentially keeps
+      queries with one lonely candidate and discards ones with several
+      valid answers, which is close to the opposite of what selective
+      prediction wants. The prior for this was written down before the
+      run, not fitted afterwards.
+- [x] **What this settles.** The correctness-detector gap is now supported
+      by two independent failures (absolute magnitude, and margin) rather
+      than one, across two datasets. It is structural, not a matter of
+      having picked the wrong signal: predicting *which* of several true
+      answers a benchmark withheld requires information that lives in the
+      split, not in the knowledge base, and no quantity computed from the
+      memory can recover it. Anything genuinely aimed at correctness
+      detection would need a source of evidence outside the KB - which is
+      a different system, not a better threshold.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
