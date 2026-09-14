@@ -1265,6 +1265,43 @@ class Ontology:
             mem.add(self._triple_vector_refined(*t))
         return mem
 
+    # Measured margin ratio for the raw pipeline: `dim` roughly this many
+    # times the per-shard triple count gives the ~5x known/unknown
+    # separation `docs/ROADMAP.md` calibrated. Used by
+    # `recommended_raw_dim`.
+    RAW_DIM_PER_TRIPLE = 164
+
+    @staticmethod
+    def recommended_raw_dim(shard_size: int = 800) -> int:
+        """The `dim` a raw-pipeline ontology should use for a given
+        ``shard_size``, rounded up to a power of two.
+
+        Exists because copying a `dim` between graphs was measured to be a
+        real mistake, not a theoretical one. The UMLS configuration
+        (`shard_size=800`, `dim=131072`) applied unchanged to Nations -
+        which needs only 4 shards - cost 294.8s of setup against the
+        normalised path's 9.2s, pushing break-even from ~43 queries to
+        ~350. Raw capacity scales with `dim` *per shard*, so `dim` should
+        track `shard_size`, never total KB size or another dataset's
+        number.
+
+        Note this deliberately ignores entity count: refinement cost is
+        dominated by `dim`, so a small-vocabulary graph gains nothing from
+        a large one. Nations has 14 entities and still paid the full
+        `dim=131072` refinement bill.
+
+        Rounds to the *nearest* power of two, not up. The measured-good
+        UMLS configuration was `shard_size=800`/`dim=131072`, a ratio of
+        163.84 - rounding up would recommend 262144 and silently double
+        the refinement cost of the exact setup these numbers came from,
+        which is the same class of mistake this method exists to prevent.
+        """
+        target = Ontology.RAW_DIM_PER_TRIPLE * max(1, shard_size)
+        dim = 1
+        while dim * 2 <= target:
+            dim *= 2
+        return dim if target - dim <= dim * 2 - target else dim * 2
+
     def ground_sharded_raw(self, shard_size: int = 800) -> list:
         """The raw counterpart to `ground_sharded` - a list of raw
         pre-normalisation memories (each an `IncrementalMemory.raw`

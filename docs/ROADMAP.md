@@ -4161,6 +4161,62 @@ in-character, less-certain option.
       query-heavy workloads, and `dim` should probably be scaled down with
       the shard size rather than copied from the UMLS configuration.
 
+## Phase 2 addendum, continued — selective prediction: the confidence claim was too broad
+
+- [x] **Why this was run:** the confidence signal is the one property that
+      makes this substrate unusual rather than merely behind - ConvE-class
+      models have no abstention mechanism at all and sit at coverage 1.0
+      by construction. Reporting it the field's way (accuracy as a
+      function of coverage, plus AURC) would turn an internal number into
+      one an outsider can compare. It also included a **random-abstention
+      control**, because accuracy usually rises when you answer fewer
+      questions and this framing can easily flatter itself.
+- [x] **The control earned its place: the result is negative, and the two
+      datasets disagree.** Raw generalising path, both datasets:
+      - UMLS (n=100 queries): accuracy 0.7300 at full coverage; 0.7467 at
+        75%; **0.7200 at 50% versus random abstention's 0.7800**.
+        AURC 0.2293 against the random control's 0.2601 - coherence helps,
+        slightly.
+      - Nations (n=120 queries): accuracy 0.3000 at full coverage; 0.3444
+        at 75%; **0.3333 at 50% versus random's 0.3833**. AURC 0.6514
+        against random's 0.6047 - coherence *hurts*.
+      - Both agree on the parts that matter: random wins at 50% coverage
+        on each, and abstaining on the least-confident half moves accuracy
+        by -0.0100 (UMLS) / +0.0333 (Nations), i.e. essentially nothing.
+- [x] **The correction this forces, stated plainly.** Earlier entries -
+      and this session's summaries - described the signal as "Zeuss knows
+      when it doesn't know". That is too broad. Two different questions
+      were being conflated:
+      - *"Does the KB have an answer to this query at all?"* Coherence
+        separates this **very well**, measured twice: AUC 0.9907 (UMLS),
+        0.9699 (Nations), against deliberately-constructed unanswerable
+        queries. This claim stands.
+      - *"Is my own top-1 answer the correct one?"* Coherence separates
+        this **poorly to not at all** - worse than random on Nations,
+        marginally better on UMLS, no useful abstention gain on either.
+        This claim was never tested until now and does not hold.
+- [x] **A mechanism that fits every observation, including the earlier
+      calibration false alarm.** Coherence measures how strongly the
+      residue resonates with *some* entity - i.e. whether a clear answer
+      exists - not whether the entity it picked matches the specific
+      triple the test split happened to withhold. On these heavily
+      multi-valued graphs those come apart: the calibration run found the
+      returned answer was a genuinely true fact in 198 of 200 queries, so
+      "is my answer true" has almost no variance to predict, while "is my
+      answer the held-out one" is partly arbitrary among several valid
+      completions. High coherence honestly means "there is a clear answer
+      here", and that is simply a different thing from top-1 rank
+      agreement.
+- [x] **What survives, and what it is worth.** The abstention capability
+      is real and still unusual - a system that reliably declines
+      unanswerable queries is materially different from one that always
+      ranks - but it is an *answerability* detector, not a correctness
+      detector. Any downstream use (e.g. suppressing confabulated answers)
+      should be scoped to that, and claims of the broader form should be
+      withdrawn wherever they appear. `RAW_REFINED_COHERENCE_FLOOR`'s own
+      calibration was always against answerable-vs-unanswerable, so the
+      constant itself is unaffected.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

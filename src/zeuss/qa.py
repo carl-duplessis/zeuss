@@ -432,6 +432,18 @@ RAW_COHERENCE_FLOOR = 0.5
 # ~1.6 points of balanced accuracy rather than failing. Still worth
 # re-calibrating (positives vs no-answer negatives) for a materially
 # different KB, but 1.7 is a reasonable default rather than a UMLS-only one.
+#
+# SCOPE - measured, and narrower than earlier write-ups claimed. This
+# threshold detects ANSWERABILITY, not correctness. It separates "the KB
+# has an answer here" from "it does not" very well (the AUCs above). It
+# does NOT tell you whether the answer returned is the right one:
+# selective-prediction curves found coherence no better than *random*
+# abstention at ranking its own top-1 correctness - AURC 0.2293 against a
+# 0.2601 random control on UMLS, but 0.6514 against 0.6047 (i.e. worse)
+# on Nations, with random winning at 50% coverage on both. Use `known` to
+# decline unanswerable queries; do not read it as "this answer is
+# correct". See docs/ROADMAP.md's selective-prediction entry for why that
+# is structural rather than a tuning gap.
 RAW_REFINED_COHERENCE_FLOOR = 1.7
 
 
@@ -898,6 +910,60 @@ def chain_sharded(
     return Chain(
         start=subject, relation=relation, hops=hops, cumulative=cumulative, resonance_coherence=resonance_coh
     )
+
+
+def ask_sharded_raw(
+    onto: Ontology,
+    memories_raw: list,
+    subject: str,
+    relation: str,
+    beta: float = 12.0,
+    subject_vector=None,
+    coherence_floor: float = RAW_COHERENCE_FLOOR,
+    shard_entities: list | None = None,
+    entity_vectors: Callable[[str], Any] | None = None,
+) -> Answer:
+    """`ask_sharded` over *raw* (pre-normalisation) shards - queries every
+    raw shard and keeps whichever `Answer` rings loudest, exactly as
+    `ask_sharded` does for the normalised path.
+
+    This existed only inside benchmark scripts for a while, deliberately:
+    the cross-shard argmax is a `coherence` comparison, and on the
+    generalising raw path `coherence` had no calibrated floor, so
+    promoting it to API would have shipped a selection rule nobody could
+    justify. `RAW_REFINED_COHERENCE_FLOOR` closed that gap (measured on
+    two datasets), so it is now a supported call.
+
+    For the generalising form pass ``entity_vectors=onto.entity_refined``,
+    shards from `Ontology.ground_sharded_raw_refined`, and
+    ``coherence_floor=RAW_REFINED_COHERENCE_FLOOR`` - the ordinary
+    `RAW_COHERENCE_FLOOR` default sits far too low on that scale.
+    Measured this way: UMLS MRR 0.8371 at 0.55s/query against the
+    normalised path's 0.7449 at ~22-27s/query; Nations MRR 0.6082 at
+    0.061s/query against 0.5223 at 0.899s/query.
+
+    Unlike `ask_sharded` this takes no ``shard_weights``: the per-shard
+    trust weights (`ontology.shard_connectivity_weights` and friends) were
+    calibrated against normalised coherence, which is bounded near 1, and
+    multiplying them into an unbounded raw coherence has never been
+    measured. Adding them without that measurement would repeat the
+    mistake this project has already made twice with untransferred
+    constants."""
+    if not memories_raw:
+        raise ValueError("ask_sharded_raw requires at least one memory - see ground_sharded_raw")
+    if shard_entities is not None and len(shard_entities) != len(memories_raw):
+        raise ValueError("shard_entities must be the same length as memories_raw")
+    best: Answer | None = None
+    for i, memory in enumerate(memories_raw):
+        answer = ask_raw(
+            onto, memory, subject, relation, beta=beta, subject_vector=subject_vector,
+            coherence_floor=coherence_floor,
+            candidate_names=None if shard_entities is None else shard_entities[i],
+            entity_vectors=entity_vectors,
+        )
+        if best is None or answer.coherence > best.coherence:
+            best = answer
+    return best
 
 
 def chain_sharded_raw(

@@ -255,3 +255,52 @@ def test_chain_sharded_raw_requires_memories():
         assert False, "expected a ValueError"
     except ValueError:
         pass
+
+
+def test_ask_sharded_raw_matches_the_normalised_path_at_small_scale():
+    """The single-hop cross-shard counterpart, promoted out of benchmark
+    scripts once RAW_REFINED_COHERENCE_FLOOR made its coherence argmax
+    justifiable. At a scale where both paths are reliable they must agree
+    on the answer."""
+    from zeuss.qa import ask_sharded, ask_sharded_raw
+
+    onto = demo_ontology()
+    normalised = onto.ground_sharded(shard_size=80, skip_irregular=False)
+    raw = onto.ground_sharded_raw(shard_size=80)
+    for subject, relation in [("socrates", "is_a"), ("sky", "has_color"), ("sun", "is_a")]:
+        a = ask_sharded(onto, normalised, subject, relation)
+        b = ask_sharded_raw(onto, raw, subject, relation)
+        assert a.answer == b.answer
+
+
+def test_ask_sharded_raw_validates_its_inputs():
+    from zeuss.qa import ask_sharded_raw
+
+    onto = demo_ontology()
+    raw = onto.ground_sharded_raw(shard_size=80)
+    for bad in ([], None):
+        try:
+            ask_sharded_raw(onto, bad or [], "socrates", "is_a")
+            assert False, "expected a ValueError"
+        except ValueError:
+            pass
+    try:
+        ask_sharded_raw(onto, raw, "socrates", "is_a", shard_entities=[{"socrates"}] * (len(raw) + 1))
+        assert False, "expected a ValueError"
+    except ValueError:
+        pass
+
+
+def test_recommended_raw_dim_reproduces_the_measured_umls_configuration():
+    """Guards against the mistake it exists to prevent: the rule must
+    return the configuration actually validated on UMLS (shard_size=800 ->
+    dim=131072, ratio 163.84), not round up to 262144 and silently double
+    refinement cost. Nations showed copying a dim across graphs is a real,
+    measured cost (294.8s setup vs 9.2s), not a theoretical one."""
+    assert Ontology.recommended_raw_dim(800) == 131072
+    assert Ontology.recommended_raw_dim(400) == 65536
+    # Always a power of two, and always in the right ballpark ratio.
+    for shard in (50, 80, 200, 400, 800, 1600):
+        dim = Ontology.recommended_raw_dim(shard)
+        assert dim & (dim - 1) == 0, f"{dim} is not a power of two"
+        assert 100 < dim / shard < 250
