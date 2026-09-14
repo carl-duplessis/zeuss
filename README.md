@@ -1,5 +1,32 @@
 # Zeuss
 
+> ## Project status: closed, with its central question answered
+>
+> Zeuss was built to test one architectural claim: that unifying continuous
+> (evidence-based) and discrete (logical) computation in a **single** substrate
+> beats running them as two systems in sequence. **That claim was tested and
+> refuted.** On the project's own canonical case — a deliberate data
+> contradiction where raw retrieval is near a coin flip (48%) and a logical
+> constraint demonstrably fires (31/60 seeds) — injecting the constraint *inside*
+> the energy landscape and applying the *same* constraint as a post-hoc re-rank
+> both reached 60/60 and **disagreed on 0 of 60 seeds**. Sweeping the constraint
+> from soft to hard found no regime where the unified form wins, and one where it
+> is markedly **worse** (37/60 vs 60/60 at low weight), because settling dilutes
+> weak logical evidence instead of amplifying it.
+>
+> **What survives is real:** the logic layer itself is valuable (48% → 100%), the
+> substrate has 318 passing tests and two-dataset validation, and several findings
+> generalise beyond this repo — most notably *why* hyperdimensional bundling
+> capacity does not respond to dimension (see below).
+>
+> **What does not:** the architectural premise that the logic had to live inside
+> the substrate. A conventional retriever plus a rule engine reaches the same
+> answer, more cheaply.
+>
+> Full derivations, measurements, failed predictions and retired claims are in
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). The headline results are summarised in
+> [Findings](#findings) below.
+
 **A unified continuous↔discrete computational substrate.**
 
 Zeuss is a research platform for the idea in [`VISION.md`](VISION.md): a computing
@@ -84,8 +111,51 @@ tests/                  # pytest suite
 docs/                   # ARCHITECTURE, ROADMAP, REMOTE_CONTROL
 ```
 
+## Findings
+
+Results that hold up, each measured rather than argued. Full derivations, the
+methodology, and the predictions that turned out wrong are in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+**Why hyperdimensional bundling capacity ignores dimension.** The most
+generalisable result here, and one this project itself got wrong for eight
+versions. `bundle()`/`unbind()` project every element back onto the unit circle;
+that projection is *nonlinear* on a noisy sum, so the **expected** recovered
+similarity is capped by bundle size alone and `dim` only tightens the estimate
+around an already-capped value. Raising `dim` 8× therefore does nothing — exactly
+what was observed and left unexplained for a long time. Reading from the raw,
+un-projected sum restores textbook capacity scaling: correct-vs-wrong separation
+sharpens as `dim` grows.
+
+**The scale law.** Memory is `entities × dim × 16` bytes, and `dim` tracks *shard*
+size, so `memory × shard_count` is invariant — you can trade memory for latency
+but the product is fixed by the graph. Crucially, that memory buys the *abstention
+margin*, not accuracy: recovery saturates at `dim/shard ≈ 20`, and everything
+above only widens the known/unknown margin (as `√ratio`). Random quasi-orthogonal
+codes cost ~655× more memory per entity than a trained model that learns a
+compressed one.
+
+**Calibrated abstention, scoped honestly.** The confidence signal is an
+**answerability** detector (AUC 0.9907 UMLS, 0.9699 Nations against
+deliberately-constructed unanswerable queries) — not a correctness detector. It
+does not know whether its own answer is right: selective-prediction curves put it
+no better than random abstention, and a margin-based rescue attempt failed on both
+datasets.
+
+**The raw pipeline.** Reading from pre-normalisation memory is both faster and
+more accurate than the normalised path (UMLS MRR 0.8371 vs 0.7449 at ~45× the
+speed; 33.8× faster multi-hop chains), and the advantage transfers to a second,
+structurally different dataset.
+
+**Benchmarked against a published baseline.** UMLS filtered link prediction, same
+splits and pooled protocol as ConvE: MRR 0.8371 against ConvE's 0.94 — behind a
+purpose-built trained model, far above the substrate's own no-generalisation
+baseline of ~0.041.
+
 ## Status
 
-`v0.1.0` — the substrate math is real, tested, and runnable on CPU. The GPU
-kernel tier and the JAX-native autodiff path are scaffolded with clear TODOs;
-see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Closed.** See the banner at the top: the architectural thesis was tested and
+refuted, and the project is archived at that answer rather than abandoned
+mid-question. The substrate math is real, tested (318 passing / 14 skipped), and
+runnable on CPU. The GPU kernel tier was explicitly retired — this machine has no
+CUDA GPU, so a kernel could be neither implemented nor parity-tested honestly.

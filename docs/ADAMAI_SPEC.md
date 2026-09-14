@@ -12,6 +12,23 @@ implementation record.
 > directions, not shipped components. Compare against `VISION.md` for the
 > original framing this doc extends.
 
+> **STATUS (project closed).** Beyond the scope note above, five specific claims
+> in this document were later *measured to be false or unsupportable*. Recorded
+> here so the spec is not read as validated:
+>
+> | Claim | Finding |
+> |---|---|
+> | "Hallucination Risk: Zero" | The confidence signal detects **answerability**, not correctness (AUC 0.99/0.97 for "can the KB answer this", but no better than random at judging its own answer). |
+> | "Absolute deterministic mathematical proofs" | `tier4_synthesis/synth.py` verifies against supplied examples, not for all inputs — its own docstring says so. |
+> | "Is this a world-first system? Yes." | Prior art exists for each ingredient; the closest relative is Frady & Sommer's vector-symbolic finite-state machines in attractor networks (2024). The defensible gap is narrower: the fuzzy-logic-over-KG literature is uniformly *gradient-trained*. |
+> | "Compute Overhead: Low" | True only at small scale: ~655× more memory per entity than a trained model; web scale is 6–52 TB, out of reach architecturally. |
+> | "Clifford multivectors, D > 10,000" | Taken literally that is 2^10000 blades. `tier2_substrate/geometric.py` implements the honest `Cl(n≤6)` rotor layer instead. |
+>
+> Most components described below *do* exist in scoped form. A grounded audit of
+> what is implemented versus what is aspirational, plus a phased build plan, was
+> produced separately; the architectural premise it rested on has since been
+> refuted (see `README.md`). Full measurements: `docs/ROADMAP.md`.
+
 ## Executive Summary
 
 This document formalizes the complete technical discussion, system breakdown,

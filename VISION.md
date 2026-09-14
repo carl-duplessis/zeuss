@@ -1,3 +1,20 @@
+> **STATUS (project closed): this document's central claim was tested and
+> refuted.** Zeuss built all three frontiers below and then measured the premise
+> uniting them — that a *single* substrate fusing continuous evidence with
+> discrete logic beats running the two in sequence. It does not. On this
+> project's own canonical case (a deliberate contradiction where retrieval alone
+> is ~48% and a logical constraint fires on 31/60 seeds), injecting the
+> constraint inside the energy landscape and applying the same constraint as a
+> post-hoc re-rank both reached 60/60 and **disagreed on 0/60 seeds**; sweeping
+> constraint strength found no regime where the unified form wins and one where
+> it is markedly worse. The mechanism is understood: settling dilutes weak
+> logical evidence rather than amplifying it.
+>
+> The frontiers themselves were built and are real — see `README.md` for the
+> findings that survive (notably *why* hyperdimensional capacity ignores
+> dimension) and `docs/ROADMAP.md` for every measurement, failed prediction and
+> retired claim. This document is kept unedited below as the original framing.
+
 What Has NOT Been Attempted Yet (The Truly Novel Frontier)
 If you want to build something genuinely novel—a substrate where determinism and probability are physically indistinguishable at the hardware and structural level—you have to move past simulated neuro-symbolic math and create a brand-new computing paradigm.
 
