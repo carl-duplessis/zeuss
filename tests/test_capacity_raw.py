@@ -185,3 +185,18 @@ def test_ask_raw_entity_vectors_defaults_to_an_exact_no_op():
     explicit = ask_raw(onto, memory, "socrates", "is_a", entity_vectors=onto.entity)
     assert default.answer == explicit.answer
     assert default.coherence == explicit.coherence
+
+
+def test_raw_refined_coherence_floor_sits_between_the_measured_classes():
+    """Pins the calibrated constant against the distributions it was
+    derived from (see RAW_REFINED_COHERENCE_FLOOR's own comment for the
+    full measurement on real UMLS). It must sit above the no-answer
+    negatives' bulk and below the positives' bulk - and well above the
+    ordinary raw path's floor, since the generalising path runs on an
+    unnormalised, much larger scale."""
+    from zeuss.qa import RAW_COHERENCE_FLOOR, RAW_REFINED_COHERENCE_FLOOR
+
+    assert RAW_REFINED_COHERENCE_FLOOR > RAW_COHERENCE_FLOOR
+    # Measured UMLS maxima/minima the threshold was chosen to separate.
+    assert RAW_REFINED_COHERENCE_FLOOR > 0.5799   # max nonexistent-subject negative
+    assert RAW_REFINED_COHERENCE_FLOOR < 2.6080   # p05 of positives

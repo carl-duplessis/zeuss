@@ -408,6 +408,27 @@ def ask(
 # per ask_raw's own docstring.
 RAW_COHERENCE_FLOOR = 0.5
 
+# The raw pipeline's *generalising* path (entity_vectors=entity_refined)
+# runs on a completely different coherence scale: refined vectors are
+# deliberately correlated, so similarities are not bounded near 1.0 the way
+# the ordinary near-orthogonal path's are. Calibrated on real UMLS
+# (dim=131072, rounds=8, alpha=0.7) against deliberately-generated
+# negatives - queries where the KB genuinely has no answer, which is what
+# `known` exists to detect:
+#   positives (real test triples)  n=80  mean 7.64  min 1.37
+#   nonexistent subject            n=80  mean 0.42  max 0.58   AUC 1.0000
+#   real subject, absent relation  n=80  mean 0.89  max 5.07   AUC 0.9814
+# Best separating threshold 1.7071 (balanced accuracy 0.9688: keeps 98.8%
+# of positives, rejects 95.0% of negatives); rounded to 1.7 here. For
+# contrast RAW_COHERENCE_FLOOR=0.5 keeps 100% of positives but rejects only
+# 67.5% of negatives - usable, just badly placed.
+#
+# Far more dataset-dependent than COHERENCE_FLOOR: this is an *unnormalised*
+# scale, so it moves with graph density and with `rounds`/`alpha`. Treat 1.7
+# as the measured UMLS value, not a universal constant, and re-calibrate
+# (positives vs no-answer negatives) for a materially different KB.
+RAW_REFINED_COHERENCE_FLOOR = 1.7
+
 
 def ask_raw(
     onto: Ontology,
@@ -502,18 +523,15 @@ def ask_raw(
     `ground_sharded_raw_refined` shards for a KB too large for one bundle.
     ``None`` (default) is an exact no-op.
 
-    **Warning - ``known``/``coherence_floor`` are not calibrated for the
-    generalising raw path.** With ``entity_vectors=onto.entity_refined``
-    the coherence scale changes completely: refined vectors are
-    deliberately correlated, so similarities are not bounded near 1.0 the
-    way this function's ordinary (near-orthogonal) path is. Measured on
-    real UMLS: coherence averaged 7.875 for known-true answers (min
-    1.188), while wrong answers reached 3.2732 - overlapping, and every
-    value far above `RAW_COHERENCE_FLOOR`, which therefore marks
-    everything ``known``. Accuracy on that path is excellent (see
-    `docs/ROADMAP.md`: MRR 0.8371 vs the normalised path's 0.7449) - it is
-    specifically the *confidence* read-out that does not transfer. Use the
-    ranking, not ``known``, until a floor is calibrated for it.
+    **Pass ``coherence_floor=RAW_REFINED_COHERENCE_FLOOR`` when using
+    ``entity_vectors=onto.entity_refined``.** The generalising path runs
+    on a different coherence scale - refined vectors are deliberately
+    correlated, so similarities are not bounded near 1.0 the way this
+    function's ordinary (near-orthogonal) path is, and the default
+    `RAW_COHERENCE_FLOOR` sits far too low. With the calibrated constant
+    the signal is genuinely good (AUC 0.9907 against queries the KB cannot
+    answer; see `RAW_REFINED_COHERENCE_FLOOR`'s own comment for the
+    measured distributions and the dataset-dependence caveat).
     """
     lookup = onto.entity if entity_vectors is None else entity_vectors
     subject_hv = onto.entity(subject) if subject_vector is None else subject_vector

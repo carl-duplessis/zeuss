@@ -1079,6 +1079,96 @@ class Ontology:
             self.codebook.add(f"ENT_REFINED:{e}", current[e])
         return self
 
+    def refine_entity_vectors_incremental(
+        self, seeds, rounds: int = 8, alpha: float = 0.7, radius: int | None = None
+    ):
+        """Re-refine only the neighbourhood around ``seeds`` instead of the
+        whole graph - the "add a fact and generalise from it immediately,
+        without retraining" path. ``seeds`` are the entity names whose
+        neighbourhoods changed (typically the subject and object of a
+        newly `add`ed triple).
+
+        **Read this before assuming it is faster: whether it saves
+        anything at all is a property of the graph, not of this method.**
+        `refine_entity_vectors` is synchronous propagation, so after
+        ``rounds`` iterations a single new edge has influenced every
+        entity within ``rounds`` hops of it. On a *dense* graph that is
+        the whole vocabulary and there is nothing to skip - real UMLS has
+        mean degree ~155, so `rounds=8` reaches everything and this method
+        cannot beat a full re-refinement. On a *sparse* graph the affected
+        set is genuinely small and the saving is real. `docs/ROADMAP.md`
+        carries the measured numbers for both regimes; do not assume the
+        sparse-graph result transfers.
+
+        ``radius`` (default ``rounds``) bounds how far the update
+        propagates. ``radius=rounds`` is the widest set that can possibly
+        change; smaller values trade fidelity for speed deliberately.
+
+        **This is an approximation, not an exact incremental
+        recomputation, and the difference is measurable.** An exact update
+        would need every entity's per-round intermediate vector from the
+        original batch run (``rounds x entities x dim`` of extra state,
+        which nothing stores). Instead, entities outside the affected set
+        are held fixed at their existing `entity_refined` value for the
+        whole update, and serve as boundary conditions for the ones being
+        recomputed. Entities inside the set restart from their raw
+        `entity()` vector, exactly as a batch run would. Fidelity against
+        a true full re-refinement is measured in `docs/ROADMAP.md` rather
+        than asserted here.
+
+        Falls back to the full `refine_entity_vectors` when nothing has
+        been refined yet - there are no boundary values to hold fixed, so
+        an incremental update would be meaningless."""
+        if not any(self.codebook.has(f"ENT_REFINED:{e}") for e in self.entity_names()):
+            return self.refine_entity_vectors(rounds=rounds, alpha=alpha)
+
+        if radius is None:
+            radius = rounds
+
+        entities = self.entity_names()
+        neighbors: dict = {e: [] for e in entities}
+        for subject, relation, obj in self.triples:
+            neighbors[subject].append((relation, obj))
+            neighbors[obj].append((relation, subject))
+
+        # Same pre-mint discipline as the batch path: never let this method
+        # be the first thing to touch a not-yet-minted codebook entry, or it
+        # silently changes which random vector an entity gets.
+        for triple in self.triples:
+            self._triple_vector(*triple)
+
+        affected = {s for s in seeds if s in neighbors}
+        frontier = set(affected)
+        for _ in range(radius):
+            nxt_frontier = set()
+            for e in frontier:
+                for _r, nbr in neighbors[e]:
+                    if nbr not in affected:
+                        affected.add(nbr)
+                        nxt_frontier.add(nbr)
+            frontier = nxt_frontier
+            if not frontier:
+                break
+
+        current = {
+            e: (self.entity(e) if e in affected else self.entity_refined(e)) for e in entities
+        }
+        for _ in range(rounds):
+            nxt = dict(current)
+            for e in affected:
+                nbrs = neighbors[e]
+                if not nbrs:
+                    continue
+                parts = [bind(self.relation_wave(r), current[neighbor]) for r, neighbor in nbrs]
+                nxt[e] = bundle(
+                    [current[e], bundle(parts)], weights=[alpha, 1 - alpha]
+                )
+            current = nxt
+
+        for e in affected:
+            self.codebook.add(f"ENT_REFINED:{e}", current[e])
+        return self
+
     def entity_refined(self, name: str):
         """The neighbour-refined vector for ``name`` (see
         `refine_entity_vectors`) if refinement has been run and covered it;

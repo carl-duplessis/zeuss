@@ -3970,12 +3970,92 @@ in-character, less-certain option.
       must not be relied on. Calibrating a floor for it needs a sample
       deliberately enriched for negatives, the same way the low-degree
       sampling trick was used for the normalised path.
+      **-> Done in the next entry, and it corrects "unusable" to "usable
+      with the right constant".**
+
+## Phase 2 addendum, continued — calibrating the raw generalising path's floor (correcting "unusable")
+
+- [x] **The previous entry's "the `known` flag on this path is unusable"
+      was too strong, and rested on the wrong kind of negative.** Its n=2
+      negatives were *wrong-but-plausible answers* (the returned entity
+      was not in the known-fact set). That is a different question from
+      the one `known` actually exists to answer: **does the KB have an
+      answer here at all**. Generating that second kind of negative
+      deliberately - rather than hoping a random test sample produces
+      some - makes the signal measurable, and it turns out to be good.
+- [x] **Three classes, 80 queries each, real UMLS, same
+      `dim=131072`/`rounds=8`/`alpha=0.7` configuration as the benchmark:**
+      - positives (real test triples): mean 7.6355, min 1.3696, p05 2.6080
+      - NEG-A, nonexistent subject entity: mean 0.4212, max 0.5799 ->
+        **AUC 1.0000**, cleanly separated
+      - NEG-B, real subject queried with a relation it has no edges of:
+        mean 0.8922, max 5.0710 -> AUC 0.9814 (the genuinely harder class,
+        since a real subject still resonates somewhat)
+      - combined **AUC 0.9907**
+- [x] **Shipped `RAW_REFINED_COHERENCE_FLOOR = 1.7`** (measured optimum
+      1.7071, balanced accuracy 0.9688 - keeps 98.8% of positives, rejects
+      95.0% of negatives). For contrast the existing
+      `RAW_COHERENCE_FLOOR=0.5` keeps 100% of positives but rejects only
+      67.5% of negatives - so the old constant was badly *placed* rather
+      than the signal being absent, which is the precise correction to the
+      previous entry. `ask_raw`'s default is unchanged (the ordinary raw
+      path still wants 0.5); the generalising path passes the new constant
+      explicitly.
+- [x] **Honest caveat the constant itself carries:** unlike
+      `COHERENCE_FLOOR`, this is an *unnormalised* scale, so it moves with
+      graph density and with `rounds`/`alpha`. 1.7 is the measured UMLS
+      value, not a universal one - a materially different KB needs
+      re-calibrating the same way (positives vs no-answer negatives).
+- [x] **Method note, third instance of the same lesson:** the earlier
+      pessimistic conclusion came from negatives that arrived incidentally
+      in a sample designed for something else. Both times a signal looked
+      broken and turned out fine, the fix was to *construct* the
+      comparison class deliberately rather than mine it out of a
+      convenience sample.
 - [x] **Not done, deliberately:** no `ask_sharded_raw`/`chain_sharded_raw`
       was added - the cross-shard max-coherence loop stayed in the
       benchmark script rather than becoming API surface, since the
       confidence-signal problem above means the natural `known`-based
       shard selection is not yet trustworthy on this path. Worth adding
       once a floor is calibrated, not before.
+
+## Phase 2 addendum, continued — incremental refinement: real on sparse graphs, worthless on dense ones
+
+- [x] **`Ontology.refine_entity_vectors_incremental(seeds, radius=...)`**:
+      re-refine only the neighbourhood around changed entities instead of
+      the whole graph - the "add a fact and generalise from it immediately,
+      without retraining" path, and the capability a gradient-trained
+      embedding model structurally cannot offer cheaply.
+- [x] **Wrote the limitation into the method's docstring *before*
+      measuring it, then confirmed it in both directions.**
+      `refine_entity_vectors` is synchronous propagation, so after
+      ``rounds`` iterations one new edge has influenced everything within
+      ``rounds`` hops. Whether that leaves anything to skip is a property
+      of the *graph*, not of the method:
+      - sparse (400-entity path graph, mean degree 2.0): **5.64x faster**
+        (0.525s -> 0.093s), entities beyond the radius left **bit-exact**
+        (similarity 1.0000), entities near the new edge at 0.9701 mean
+        similarity to a true full re-refinement (min 0.9082) - the honest
+        cost of the approximation
+      - dense (140 entities, mean degree 150, UMLS-like): **1.03x - no
+        saving at all**, because every entity is within ``rounds`` hops
+- [x] **The approximation degenerates gracefully to exact, which explains
+      both dense-graph numbers at once.** Entities outside the affected
+      set are frozen at their current `entity_refined` value as boundary
+      conditions - that freezing *is* the approximation. When the radius
+      covers the whole graph there is nothing frozen, so the method
+      becomes precisely the batch algorithm: hence the dense case's
+      similarity of exactly 1.0000, and hence also its complete absence of
+      speedup. Pinned by `test_incremental_refine_degenerates_to_exact_
+      when_everything_is_affected`.
+- [x] **Honest scope:** an *exact* incremental update would need every
+      entity's per-round intermediate vector from the original batch run
+      (``rounds x entities x dim`` of extra state, which nothing stores) -
+      that is why this is a boundary-condition approximation rather than
+      an exact recomputation. Falls back to a full refine when nothing has
+      been refined yet (no boundary values exist to hold fixed). Measured
+      on synthetic graphs of controlled density, not on a real sparse KB -
+      UMLS is dense, so it is precisely the dataset this cannot help.
 
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,

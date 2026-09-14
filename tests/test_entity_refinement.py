@@ -289,3 +289,67 @@ def test_generalized_query_via_entity_refined_preserves_honest_confidence():
         ).known
     )
     assert known_count == 0  # measured: correct != confident for generalised queries on this domain
+
+
+def _path_graph(n=20, dim=1024, seed=0):
+    onto = Ontology(dim=dim, seed=seed)
+    for i in range(n - 1):
+        onto.add(f"a{i}", "next", f"a{i+1}")
+    return onto
+
+
+def test_incremental_refine_only_touches_the_local_neighbourhood():
+    """The whole point of the incremental path: after adding a fact, only
+    entities near it should have their refined vectors change. On a sparse
+    path graph with radius=2, exactly the entities within 2 hops of each
+    seed should move and everything else must stay bit-identical."""
+    onto = _path_graph()
+    onto.refine_entity_vectors(rounds=3, alpha=0.7)
+    before = {e: onto.entity_refined(e).copy() for e in onto.entity_names()}
+
+    onto.add("a5", "next", "a12")
+    onto.refine_entity_vectors_incremental(seeds={"a5", "a12"}, rounds=3, alpha=0.7, radius=2)
+
+    changed = {e for e in onto.entity_names()
+               if similarity(before[e], onto.entity_refined(e)) < 0.999}
+    assert changed == {"a3", "a4", "a5", "a6", "a7", "a10", "a11", "a12", "a13", "a14"}
+
+
+def test_incremental_refine_falls_back_to_full_when_never_refined():
+    """With nothing refined yet there are no boundary values to hold fixed,
+    so an incremental update is meaningless - it must do the full pass
+    instead of silently producing a half-refined codebook."""
+    onto = _path_graph()
+    onto.refine_entity_vectors_incremental(seeds={"a5"}, rounds=3, alpha=0.7)
+    # Every entity should now carry a refined vector distinct from its raw one.
+    distinct = [e for e in onto.entity_names()
+                if similarity(onto.entity(e), onto.entity_refined(e)) < 0.999]
+    assert len(distinct) > len(onto.entity_names()) // 2
+
+
+def test_incremental_refine_degenerates_to_exact_when_everything_is_affected():
+    """Honest-boundary property worth pinning: the incremental path is an
+    approximation only because entities outside the affected set are frozen
+    as boundary conditions. When the radius covers the whole graph there
+    are no frozen entities, so it becomes precisely the batch algorithm -
+    which is why a dense graph gets exact agreement (and, correspondingly,
+    no speedup)."""
+    onto_inc = _path_graph(n=8)
+    onto_inc.refine_entity_vectors(rounds=3, alpha=0.7)
+    onto_full = _path_graph(n=8)
+    onto_full.refine_entity_vectors(rounds=3, alpha=0.7)
+
+    onto_inc.add("a0", "next", "a7")
+    onto_full.add("a0", "next", "a7")
+
+    onto_inc.refine_entity_vectors_incremental(seeds={"a0", "a7"}, rounds=3, alpha=0.7, radius=99)
+    onto_full.refine_entity_vectors(rounds=3, alpha=0.7)
+
+    for e in onto_full.entity_names():
+        assert similarity(onto_full.entity_refined(e), onto_inc.entity_refined(e)) > 0.9999
+
+
+def test_incremental_refine_returns_self_for_chaining():
+    onto = _path_graph()
+    onto.refine_entity_vectors(rounds=3, alpha=0.7)
+    assert onto.refine_entity_vectors_incremental(seeds={"a5"}, rounds=3, alpha=0.7) is onto
