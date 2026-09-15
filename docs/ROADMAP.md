@@ -4959,6 +4959,48 @@ in-character, less-certain option.
       leaning on it further, if a future session wants to push on this
       specific pair rather than a new one.
 
+## Post-closure, continued — firming up the n=14 result: a real harness bug, not a data limit
+
+- [x] **Asked directly whether n=14 was a real ceiling or an artefact -
+      it was an artefact, and a fixable one.** Traced why 55/69 eligible
+      cases were being skipped: the candidate list was built as
+      `({y_true} | excl_local | nat_objects_local) & onto._entities` -
+      intersected with the SMALL local sub-ontology's own entity set.
+      Nationality values live in a ~150-country universe that almost
+      never overlaps with one person's tiny 1-hop neighbourhood (their
+      profession, spouse, gender, places-lived facts - not other people
+      who happen to share their country), so the intersection usually
+      collapsed the candidate list to size 1 and the case got silently
+      skipped. This was never a property of the DATA (n=14 real cases
+      existing) - it was a bug in how candidates were assembled.
+- [x] **The fix is not a workaround: `qa.ask`'s own `entity_refined()`
+      already documents a safe fallback to an ordinary unrefined vector
+      for any name it hasn't seen** (`Codebook.symbol` mints one lazily
+      on first access). Candidates absent from X's local neighbourhood
+      don't need to be - dropping the `& onto._entities` restriction and
+      passing the full global excluded set directly as `candidate_names`
+      uses an already-documented, already-relied-upon code path exactly
+      as intended, not a new mechanism invented to inflate the sample.
+- [x] **Re-ran the identical mining/validation, only the candidate
+      construction changed - all 69/69 eligible cases now process (0
+      skipped), reproduced byte-identical on a second run:**
+      `BASELINE 24/69=0.348 -> JOINT 60/69=0.870 -> POST_FILTER 60/69=0.870`.
+      A dramatically stronger, now properly-powered result - baseline
+      more than doubles (n=14's 0.286 was itself noisy) and both
+      mechanisms reach 87%, a ~2.5x lift, the single largest accuracy
+      gain of anything measured in this entire investigation. Disagreement
+      rate 5/69=7.2% - consistent with the established candidate-field
+      pattern at the *opposite* extreme: mean candidates=99.9 but mean
+      excluded=99.0, so almost every query collapses to essentially one
+      surviving candidate, the same "few live options left" regime that
+      predicts near-total JOINT/POST_FILTER agreement.
+- [x] **Superseded, not deleted: the n=14 entry above understated this
+      result by roughly 2.5x on baseline-relative lift, purely from a
+      harness bug, not from the underlying data or mechanism being weak.**
+      Left the original entry in place with this correction following it,
+      same discipline as every other retraction in this document - the
+      mistake and its fix are both part of the record.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

@@ -258,6 +258,19 @@ is whether the target relation's own assumptions hold — UMLS and
 Countries each violated a different one; this pair violates neither, and
 the identical mining code that failed twice worked here.
 
+**Correction to the above: n=14 was a harness bug, not a data limit.** The
+candidate list was accidentally intersected with the local sub-ontology's
+tiny entity set, and nationality's ~150-country universe almost never
+overlaps with one person's local neighbourhood — so most cases were
+silently dropped, not genuinely uncomputable. `qa.ask`'s own
+`entity_refined()` already documents a safe fallback for candidates it
+hasn't locally seen; using it properly (not a new mechanism) let all
+69/69 eligible cases process. Re-run, reproduced: BASELINE 34.8% → JOINT
+87.0% → POST_FILTER 87.0% — the single largest accuracy gain measured in
+this whole investigation, roughly 2.5× stronger than the n=14 number
+suggested. Left visible rather than silently replaced, same as every
+other correction in this project.
+
 ## Status
 
 **Closed**, with one post-closure follow-up. The architectural thesis was
