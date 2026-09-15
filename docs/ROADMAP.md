@@ -4788,6 +4788,66 @@ in-character, less-certain option.
       tree, so they have no hypernym-descendants to exclude) - a clean,
       structurally-explained null result, not a failure of the method.
 
+## Post-closure, continued — a genuinely different KIND of constraint, not just a different relation
+
+- [x] **Everything so far derives its constraint from the KG's own graph
+      topology** (no cycles in the `_hypernym` DAG). That leaves a real
+      question unanswered: does a *declared* constraint - sourced
+      externally, not mined or derived from this graph at all - work the
+      same way? Used WordNet's own lexicographer-file classification (45
+      hand-curated semantic categories per synset, e.g. `noun.person`,
+      `noun.animal`, `noun.plant`, via `nltk.corpus.wordnet`'s `lexname()`)
+      as a real analogue of a schema declaring classes disjoint (the way
+      YAGO declares `Person` and `Location` disjoint) - a genuinely
+      different *kind* of constraint, chosen for its own defensible,
+      linguist-curated soundness, not fit to this data.
+- [x] **Picked the disjoint-cluster set BEFORE looking at any veto
+      results**: `{noun.plant, noun.animal, noun.person, noun.artifact,
+      noun.location, noun.substance, noun.food, noun.body}`, treated as
+      pairwise mutually exclusive (ordinary semantic fact: a person is not
+      a plant, an artifact is not a location). Checked the false-veto rate
+      per relation on the real TEST split before running anything:
+      `_instance_hypernym` came back **0/122 = 0.0%**, and - unlike the
+      no-cycles constraint, which never fired for this relation at all
+      (instances are leaves) - it **fires on 96/122 = 78.7%** of real test
+      queries. This is the complementary case the earlier constraint
+      structurally could not reach.
+- [x] **Ran the real substrate test, full eligible pool (86 cases, 84
+      processed):**
+      `BASELINE 28/84=0.333 -> JOINT 35/84=0.417 -> POST_FILTER 37/84=0.440`.
+      Both mechanisms beat baseline again, POST_FILTER again at least ties
+      JOINT (37 vs 35) - the same shape as every relation tested so far,
+      now confirmed under a **structurally unrelated constraint mechanism**,
+      not just a different relation using the same one. Disagreement rate
+      15.5% at mean candidates/case 5.9 - consistent with the candidate-
+      field-size relationship found above (6.1 candidates -> 10% disagree
+      for `_synset_domain_topic_of`; this is a close second data point on
+      the same low end of that curve). Reproduced byte-identical on a
+      second run before trusting it, per this project's own established
+      discipline.
+- [x] **Honest contrast worth keeping: this constraint is NOT perfectly
+      sound the way the no-cycles one was.** Measured over the FULL test
+      split across all 11 relations (not just the one tested at substrate
+      level), the disjointness veto's false-veto rate ranges from 0.0%
+      (`_instance_hypernym`, `_also_see`, `_member_of_domain_usage`,
+      `_similar_to`, `_verb_group` - several of these vacuously, since
+      verb/adjective synsets never fall in the noun-only disjoint set at
+      all) up to **46.2%** (`_member_of_domain_region` - a term's cultural/
+      geographic domain routinely crosses these categories, e.g. a
+      person-related term whose domain region is a place). A
+      graph-topology invariant (no cycles in a DAG) can be exactly sound
+      by construction; a semantically-declared one inherits WordNet's own
+      real edge cases (metaphor, metonymy, domain-relation semantics that
+      don't respect physical-kind boundaries) - worth knowing before
+      reaching for a "declared disjointness" constraint on a relation
+      without checking it first, exactly as done here.
+- [x] **What this adds to "does the logic layer earn its keep":** yes,
+      across two independent axes now - which relation is being predicted,
+      and where the constraint itself comes from (derived from this
+      graph's own structure, or declared by an entirely separate,
+      externally-curated classification). Neither axis was free to vary
+      before this - the original `_hypernym` result varied neither.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

@@ -203,6 +203,23 @@ explanation. See `docs/ROADMAP.md`, "Post-closure — does the logic layer earn
 its keep on real, non-hand-built data?" and its "generalise past one
 relation?" follow-up.
 
+Does it generalise past one *kind* of constraint? Everything above derives
+its constraint from the graph's own topology (no cycles). Tested a
+genuinely different kind — WordNet's own lexicographer classification
+(`noun.person`, `noun.animal`, `noun.plant`, …) as a declared-disjointness
+constraint, the same role YAGO's schema plays when it declares `Person` and
+`Location` disjoint — on `_instance_hypernym`, the one relation the earlier
+constraint couldn't reach at all (instances are leaves, so "no cycles"
+never fires there). 0/122 false vetoes on real test data, firing on 78.7%
+of queries — the complementary case. Real result: BASELINE 33.3% → JOINT
+41.7% → POST_FILTER 44.0%, same shape again. One honest asymmetry: unlike
+the no-cycles constraint (exactly sound by construction), this one inherits
+WordNet's real edge cases — false-veto rate across all 11 relations ranges
+from 0% up to 46.2% (`_member_of_domain_region`, where a term's cultural
+domain routinely crosses these categories) — checked per-relation before
+trusting any of them. See `docs/ROADMAP.md`'s "a genuinely different KIND
+of constraint" entry.
+
 ## Status
 
 **Closed**, with one post-closure follow-up. The architectural thesis was
