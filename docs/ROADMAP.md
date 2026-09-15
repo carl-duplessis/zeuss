@@ -4593,6 +4593,43 @@ in-character, less-certain option.
       was mine, it was written down in advance, and it was refuted -
       quantisation does not cap capacity across VSA flavours.
 
+## Literature check on the scale mismatch — not novel, and that's fine
+
+- [x] **The absolute-similarity cap itself (not just the discriminability
+      side already cited above) is also a direct corollary of established
+      theory, not a new law.** Read Plate 1995 (IEEE TNN, "Holographic
+      Reduced Representations", Appendix A) directly rather than assuming
+      from memory. Plate's own capacity analysis of addition/superposition
+      memories gives the *raw*, un-normalised accept signal exactly:
+      `E[S_a] = 1`, `Var[S_a] = (k+1)/n` for a bundle of `k` items in
+      dimension `n` - independent of `k` in expectation, matching what this
+      project calls the raw pipeline (`~1.0` regardless of bundle size).
+      Normalising that same bundle to unit length - dividing by its norm,
+      which for `k` quasi-orthogonal unit vectors is `~sqrt(k)` - turns
+      that `E=1` raw signal into `~1/sqrt(k)`, independent of `n`. That is
+      this project's own "absolute recovered similarity capped by bundle
+      size, flat across a dim sweep" result, arrived at with a two-line
+      corollary of a 1995 result rather than anything new. Plate himself
+      flags the normalisation step as complicating the analysis (Section
+      X-E, "Normalization of Vectors") but does not carry the algebra
+      through to this ceiling - so it's a known-but-unremarked corollary,
+      not a published law with a name.
+- [x] **Verdict: this project's finding is a validated re-derivation, not
+      a contribution.** The scale/capacity split (absolute score is
+      dim-independent and capped by `N`; discriminability is dim-dependent
+      and uncapped) is real and correctly measured, but every piece of the
+      mechanism traces to Plate 1995's own worked appendix plus the general
+      SNR law in Frady, Kleyko & Sommer 2018 (arXiv:1707.01429), which
+      already unifies HRR/FHRR/MAP/BSC under one `s = sqrt(dim/N)`
+      derivation - the two-flavour fit here (FHRR, MAP) is consistent with,
+      not independent evidence for, that existing unification. What is
+      this project's own, worth keeping: stating "scale" and "capacity" as
+      two separably-measured quantities side by side (most treatments only
+      report the discriminability side), and validating the constant by
+      fitting it blind on synthetic data and checking it against this
+      project's own previously-unexplained empirical failure point, rather
+      than fitting and checking on the same data.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

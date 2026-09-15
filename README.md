@@ -137,6 +137,19 @@ raising `dim` could never lift it over the bar. An earlier version of this secti
 claimed "capacity ignores dimension" — that was wrong, and the measurements
 correcting it live in a separate follow-up study.
 
+**Literature check, done rather than assumed:** neither half of this is new.
+Plate's original 1995 capacity analysis (IEEE TNN, Appendix A) already gives the
+raw, un-normalised bundle signal as `E=1` regardless of bundle size `k` — exactly
+this project's raw-pipeline number — and normalising that bundle to unit length
+(dividing by its norm, `~√k` for `k` quasi-orthogonal terms) is a two-line
+corollary that produces the `~1/√k`, dim-independent ceiling measured here. The
+discriminability side is the general superposition-capacity law unifying
+HRR/FHRR/MAP/BSC (Frady, Kleyko & Sommer 2018, arXiv:1707.01429). So this is a
+validated re-derivation of ~30-year-old theory, not a new result — what's
+project-specific is stating scale and capacity as two separately-measured
+quantities, and validating the constant by fitting it blind and checking it
+against this project's own previously-unexplained failure point.
+
 **The scale law.** Memory is `entities × dim × 16` bytes, and `dim` tracks *shard*
 size, so `memory × shard_count` is invariant — you can trade memory for latency
 but the product is fixed by the graph. Crucially, that memory buys the *abstention
