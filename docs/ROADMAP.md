@@ -4902,6 +4902,63 @@ in-character, less-certain option.
       wrinkle (false-veto asymmetry, the exact JOINT/POST_FILTER tally,
       the scale-wall recurrence) was reported rather than smoothed over.
 
+## Post-closure, continued — a fourth axis: a differently-shaped constraint
+
+- [x] **Every constraint tested so far shares one shape: "no cycles in a
+      directed hierarchy"** (`_hypernym`'s own tree, cross-relation reuse
+      of it, FB15k-237's containment tree) or "declared category
+      disjointness" (WordNet lexnames). Both are internally consistent
+      *by construction or by curation* - neither is the ORIGINAL mechanism
+      this whole thread traces back to (the socrates case: a `Rule` whose
+      antecedent is a fact about a *different* relation, mined via plain
+      support/confidence - `axiom_mining.discover_all_exclusions`, the
+      exact machinery that failed twice already on UMLS (inert) and
+      Countries (decisive but wrong 19/24 times). Asked directly: was that
+      *mining itself* unsound, or did it just hit two graphs that violated
+      its assumptions?
+- [x] **Mined a real cross-relation implication on FB15k-237**:
+      `/people/person/place_of_birth` -> `/people/person/nationality`
+      (a real, unremarkable fact - most people's nationality matches their
+      birthplace's country). 189 implications found (support 2-213,
+      confidence 0.80-0.97), converted to exclusions via the same
+      `discover_all_exclusions` call that failed twice before - nothing
+      about the mining code changed. Validated against the real TEST
+      split before running anything: **8/494 = 1.6% false vetoes, fires
+      on 69/494 = 14.0%** - not perfectly sound like a structural
+      invariant, but far closer to WordNet's declared-disjointness
+      profile (0-46% depending on relation) than to Countries' 79%
+      failure.
+- [x] **Real substrate result - small sample, reported honestly as such:**
+      candidate pools shrank hard here (mean 2.4 candidates/case, only
+      14/69 eligible cases had enough local graph structure to build a
+      usable candidate set - nationality's ~150-value universe rarely
+      overlaps with a single person's 1-hop neighbourhood).
+      `BASELINE 4/14=0.286 -> JOINT 5/14=0.357 -> POST_FILTER 5/14=0.357`,
+      0 disagreements (consistent with the candidate-field-size pattern -
+      mean 2.4 candidates sits right at the low end where JOINT and
+      POST_FILTER are expected to agree almost every time). Both
+      mechanisms beat baseline again, on the smallest, noisiest sample of
+      this whole investigation - a real but weak data point, not a
+      strong one on its own.
+- [x] **What this corrects, precisely: the earlier framing ("mining
+      fails, hand-derived structural constraints work") was too broad.**
+      The real distinction is whether the target relation's own
+      assumptions hold - UMLS failed because it's small and dense (almost
+      nothing is mutually exclusive); Countries failed because one
+      relation name secretly spanned two hierarchy levels; FB15k-237's
+      place-of-birth/nationality pair has neither problem, and the
+      identical mining code that failed twice worked here. Mining isn't
+      the flaw; testing it only on graphs that happened to violate its
+      assumptions was the earlier gap.
+- [x] **Four axes now, not three: relation, constraint-derivation method
+      (derived vs. declared vs. mined-correlational), dataset, and now
+      confirmed - the underlying mechanism generalises across genuinely
+      different *logical shapes* of constraint, not just different
+      instances of the same shape.** The smallest-n result in the set
+      (n=14) is the one place this thread should get more data before
+      leaning on it further, if a future session wants to push on this
+      specific pair rather than a new one.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)

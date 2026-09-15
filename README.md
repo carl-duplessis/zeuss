@@ -239,6 +239,25 @@ independent axes now agree: relation, constraint-derivation method, and
 dataset. See `docs/ROADMAP.md`'s "a third axis: a completely different
 dataset" entry.
 
+Does it generalise past one *shape* of constraint? Every constraint above
+is "no cycles in a hierarchy" or "declared category disjointness" — both
+sound by construction or curation. The original mechanism this project
+traces back to is different: a mined cross-relation implication
+(`axiom_mining.discover_all_exclusions`), the exact machinery that failed
+twice on real data (UMLS: inert; Countries: decisive but wrong 19/24
+times). Mined a real one on FB15k-237 —
+`place_of_birth → nationality` — and validated it against the real test
+split before running anything: 8/494 = 1.6% false vetoes, fires on 14.0%.
+Real result, small sample (candidate pools shrank hard — mean 2.4
+candidates/case, only 14/69 eligible): BASELINE 28.6% → JOINT 35.7% →
+POST_FILTER 35.7%. Both mechanisms beat baseline again, on the weakest,
+noisiest sample of this whole investigation — reported as such, not
+oversold. What this corrects: "mining fails, hand-derived constraints
+work" was too broad a lesson from two data points. The real distinction
+is whether the target relation's own assumptions hold — UMLS and
+Countries each violated a different one; this pair violates neither, and
+the identical mining code that failed twice worked here.
+
 ## Status
 
 **Closed**, with one post-closure follow-up. The architectural thesis was
