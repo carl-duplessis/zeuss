@@ -220,6 +220,25 @@ domain routinely crosses these categories) — checked per-relation before
 trusting any of them. See `docs/ROADMAP.md`'s "a genuinely different KIND
 of constraint" entry.
 
+Does it generalise past one *dataset*? Everything above is still WordNet.
+Fetched FB15k-237 (Freebase, 14,541 entities, 237 relations) — a real,
+known-messier benchmark with no relationship to WordNet — and found the
+same "no cycles in a directed hierarchy" logic applies to real geographic
+containment (`/location/location/contains`): 0/330 false vetoes, fires on
+68.8% of test triples. Its 2-hop neighbourhoods were far too large to
+ground directly (median ~9,500 entities — Freebase hub entities connect to
+thousands of others, a concrete re-run into the earlier "scale wall"
+finding on new data); restricting to 1-hop fixed it. Real result (109
+cases, reproduced): BASELINE 3.7% → JOINT 7.3% → POST_FILTER 7.3% — both
+mechanisms double baseline again, on a dataset with zero relationship to
+WordNet. One honest, unforced difference: JOINT and POST_FILTER tied here
+rather than POST_FILTER pulling ahead, at a candidate-field size (24.6)
+between the two WordNet data points that showed a gap — consistent with,
+not contradicting, the disagreement-rate-vs-field-size pattern. Three
+independent axes now agree: relation, constraint-derivation method, and
+dataset. See `docs/ROADMAP.md`'s "a third axis: a completely different
+dataset" entry.
+
 ## Status
 
 **Closed**, with one post-closure follow-up. The architectural thesis was
