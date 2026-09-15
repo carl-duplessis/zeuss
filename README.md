@@ -175,10 +175,31 @@ splits and pooled protocol as ConvE: MRR 0.8371 against ConvE's 0.94 — behind 
 purpose-built trained model, far above the substrate's own no-generalisation
 baseline of ~0.041.
 
+**The logic layer, re-tested on real data.** "The logic layer earns its keep"
+rested on one hand-built case (a data contradiction). Hunted for a real dataset
+with a genuinely informative constraint — Kinship and Countries both ruled out
+by measurement (either uninformative or, worse, confidently wrong 19/24 times).
+WN18RR's `_hypernym` relation is the first that held up: 97.8% of synsets have
+exactly one direct hypernym, so a structural no-cycles constraint (a known
+descendant can never also be an ancestor) is sound rather than merely
+correlational — 0/300 false vetoes against real held-out test triples. Run for
+real on 198 held-out cases: BASELINE 10.6% → JOINT 21.2% → POST_FILTER 32.8%.
+The logic layer's benefit is no longer resting on a toy case — but with a
+realistic multi-candidate field (not the socrates case's 2), POST_FILTER
+*strictly* beats JOINT (65 vs 42 correct), not just ties it: removing several
+attractors reshapes which basin `settle`'s limited iteration converges to, a
+cost a static re-rank never pays. See `docs/ROADMAP.md`, "Post-closure — does
+the logic layer earn its keep on real, non-hand-built data?".
+
 ## Status
 
-**Closed.** See the banner at the top: the architectural thesis was tested and
-refuted, and the project is archived at that answer rather than abandoned
-mid-question. The substrate math is real, tested (318 passing / 14 skipped), and
-runnable on CPU. The GPU kernel tier was explicitly retired — this machine has no
-CUDA GPU, so a kernel could be neither implemented nor parity-tested honestly.
+**Closed**, with one post-closure follow-up. The architectural thesis was
+tested and refuted, and the project is archived at that answer rather than
+abandoned mid-question — that verdict stands. A later, narrower question
+("does the one surviving piece, the logic layer, hold up on real data?") was
+asked and answered positively above; it doesn't reopen the architectural
+question, it just replaces "demonstrated once, on a hand-built case" with
+"demonstrated on a real dataset, at real scale." The substrate math is real,
+tested (318 passing / 14 skipped), and runnable on CPU. The GPU kernel tier
+was explicitly retired — this machine has no CUDA GPU, so a kernel could be
+neither implemented nor parity-tested honestly.

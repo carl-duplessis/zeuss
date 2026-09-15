@@ -4630,6 +4630,111 @@ in-character, less-certain option.
       project's own previously-unexplained empirical failure point, rather
       than fitting and checking on the same data.
 
+## Post-closure — does the logic layer earn its keep on real, non-hand-built data?
+
+- [x] **The question this project's own closure left open.** The
+      unification thesis was refuted, but "the logic layer earns its keep
+      (48%->100%)" rested on exactly one hand-built case (the socrates
+      contradiction) - every attempt to find an equally informative
+      constraint on *real* data (UMLS: three constraint sources, all
+      inert or near-inert - see "the unification test could not be run"
+      above) failed for a structural reason: UMLS is small and dense, so
+      almost nothing is mutually exclusive. Asked directly: is there a
+      real dataset where a genuinely informative constraint exists?
+- [x] **Two more real datasets ruled out by measurement before a third
+      succeeded.** Kinship (Alyawarra, pykeen mirror): 88% of relations
+      classified multi-valued (mean subject fanout 4.4) - kin terms are
+      many-to-many categories, the same shape of problem as UMLS. Ruled
+      out without running anything further. Countries S1: `locatedin`
+      looked promising (mean fanout 1.74, low) but turned out to secretly
+      conflate two hierarchy levels (country->region *and* region->
+      continent) under one relation name; naive support/confidence
+      exclusion mining (`axiom_mining.discover_all_exclusions`) fired
+      confidently and was **wrong on 19/24 real test triples** - a worse
+      failure mode than UMLS's inertness, since it's decisive *and*
+      incorrect. Also ruled out.
+- [x] **WN18RR's `_hypernym` relation is the first real, non-hand-built
+      case where the constraint holds.** 97.8% of synsets have exactly
+      one direct hypernym in the training data (mean fanout 1.022, vs
+      UMLS's ~2% single-valued) - WordNet's noun hierarchy is genuinely
+      close to a tree. Rather than mine a correlational exclusion (the
+      mechanism that failed twice above), used a *structural* invariant
+      instead: a DAG cannot contain cycles, so if entity Z is already
+      known (via *other* entities' stored hypernym facts, unaffected by
+      whichever fact is held out for a given query) to be a descendant of
+      X, then Z can never *also* be X's hypernym. Checked directly against
+      300 real held-out WN18RR test triples before touching the substrate:
+      **0/300 false vetoes** (the true answer was never excluded) and the
+      constraint fired on 27% of queries (mean 4.0 candidates excluded
+      when it fired, up to 455 in one case). First constraint in this
+      whole investigation - across UMLS, Kinship, Countries - that is
+      both decisive and correct on real data.
+- [x] **Ran the actual substrate test on 198 real held-out cases (the
+      full eligible pool, not a hand-picked favourable subset) - and it
+      both confirms and sharpens the closed thesis.** Local sub-ontology
+      per case (2-hop neighbourhood around the query entity, dim=4096,
+      TRAIN-split triples only, entity count 13-129/case), `refine_entity_
+      vectors` + `ground_refined` for a real generalising probe (the
+      query entity's own hypernym fact is genuinely absent from training -
+      not just excluded from the ontology by hand), `qa.ask` with
+      `candidate_names` scoped to the true answer plus the mined
+      descendant-exclusion set:
+      | condition | accuracy |
+      |---|---|
+      | BASELINE (no constraint) | 21/198 = 0.106 |
+      | JOINT (bias inside settle) | 42/198 = 0.212 |
+      | POST_FILTER (re-rank ask's own output) | 65/198 = 0.328 |
+      Both mechanisms roughly double-to-triple baseline accuracy on real
+      held-out facts - **the logic layer's value is no longer resting on
+      one hand-built case.** But POST_FILTER vs JOINT disagreed on 96/198
+      (48.5%) of cases, and POST_FILTER's accuracy is clearly, substantially
+      higher (65 vs 42) - not the "equal when decisive" tie the socrates
+      study found. That study only ever had 2 candidates, so vetoing one
+      trivially resolved to the other regardless of mechanism; here mean
+      candidates/case = 11.2 with mean 4.7 excluded, leaving several live
+      candidates competing. Removing several attractors from `settle`'s
+      iterative dynamics reshapes *which basin z converges to* within a
+      fixed step budget - a path-dependent cost a static re-rank of the
+      pre-settle score never pays. **Refines, not just confirms, the
+      earlier verdict: with more than two real candidates, POST_FILTER can
+      strictly beat JOINT even under a fully decisive constraint, not just
+      tie it.**
+- [x] **One honest wrinkle, found and reported rather than smoothed over:**
+      a "hard" veto here is `weight *= exp(-10)`, not literal exclusion.
+      In 5/198 cases (2.5%, identical count for both mechanisms - so this
+      does not bias the JOINT/POST_FILTER comparison above) every other
+      live candidate scored exactly `0.0`, and `exp(-10) ~ 4.5e-5` times a
+      small positive score still beat zero - the excluded candidate won
+      anyway. A real, symmetric floor on how "hard" an exponential-penalty
+      veto can be, distinct from the mechanism-level JOINT/POST_FILTER
+      question above.
+- [x] **What this changes about "is the logic layer worth pursuing":**
+      yes, concretely - a *hand-derived structural* constraint (no cycles)
+      through the existing, unmodified `axiom_bias` hook is what worked;
+      the *automatic mining* machinery (`discover_all_exclusions`,
+      support/confidence over the data) is what failed, twice, on real
+      data (UMLS, Countries). The infrastructure earns its keep; the
+      "discover it automatically" ambition does not, at least not from
+      plain cardinality statistics. No source code changed for this -
+      every primitive used (`Ontology.refine_entity_vectors`, `ground_
+      refined`, `qa.ask`'s `axiom_bias`/`candidate_names`/`entity_vectors`)
+      already existed; this was a measurement, not a feature.
+- [x] **Methodological note for future reproduction:** `Codebook.symbol`
+      mints each entity's vector from one shared seeded RNG stream on
+      first access, so *any* unordered Python-set iteration in the
+      ontology-construction path makes results depend on per-process
+      string-hash randomisation, not just the seed. Caught directly: an
+      early version of this experiment's harness iterated an unsorted
+      neighbourhood set when adding triples and produced *different*
+      per-case answers across separate process runs at the identical
+      seed - silent non-determinism, not noise. Fixed by sorting every
+      collection that touches `.add()`/first entity access; reproduced
+      byte-identical across repeated runs after the fix, and only then
+      trusted. Scratch harness and raw per-case records not committed
+      (`scratch_wn18rr/` gitignored, matching this project's established
+      convention of keeping downloaded benchmark data and one-off
+      experiment scripts out of the repo).
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
