@@ -283,3 +283,9 @@ question, it just replaces "demonstrated once, on a hand-built case" with
 tested (318 passing / 14 skipped), and runnable on CPU. The GPU kernel tier
 was explicitly retired — this machine has no CUDA GPU, so a kernel could be
 neither implemented nor parity-tested honestly.
+
+**Spin-off:** the one piece of the logic layer validated across all four axes
+above — re-ranking a candidate list by a sound exclusion constraint — needs
+no hypervectors or substrate at all, so it's extracted as a standalone,
+dependency-free package at [`postfilter/`](postfilter/), usable on any
+ranked-candidate output from any model.
