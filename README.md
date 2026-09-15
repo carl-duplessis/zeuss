@@ -188,8 +188,20 @@ The logic layer's benefit is no longer resting on a toy case — but with a
 realistic multi-candidate field (not the socrates case's 2), POST_FILTER
 *strictly* beats JOINT (65 vs 42 correct), not just ties it: removing several
 attractors reshapes which basin `settle`'s limited iteration converges to, a
-cost a static re-rank never pays. See `docs/ROADMAP.md`, "Post-closure — does
-the logic layer earn its keep on real, non-hand-built data?".
+cost a static re-rank never pays.
+
+Does it generalise past one relation? Reused the same `_hypernym`-derived
+constraint — mined once — as a cross-relation veto for three other WN18RR
+relations: still 0 false vetoes on every one. Real substrate results replicate
+the shape on the two with a usable sample (`_has_part` n=22: 0.0%→9.1%→31.8%;
+`_synset_domain_topic_of` n=10: 10.0%→70.0%→80.0%) — baseline stays low, both
+mechanisms clear it substantially, POST_FILTER is never worse than JOINT. A
+bonus pattern the single-relation result couldn't show: disagreement rate
+tracks candidate-field size cleanly across all three (6.1 candidates → 10%
+disagree; 11.2 → 48.5%; 40.3 → 63.6%), exactly matching the settle-dynamics
+explanation. See `docs/ROADMAP.md`, "Post-closure — does the logic layer earn
+its keep on real, non-hand-built data?" and its "generalise past one
+relation?" follow-up.
 
 ## Status
 

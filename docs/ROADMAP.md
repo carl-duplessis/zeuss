@@ -4735,6 +4735,59 @@ in-character, less-certain option.
       convention of keeping downloaded benchmark data and one-off
       experiment scripts out of the repo).
 
+## Post-closure, continued — does the no-cycles constraint generalise past one relation?
+
+- [x] **Asked directly rather than resting on one relation.** The `_hypernym`
+      result above is a single relation in a single dataset. Reused the
+      exact same `_hypernym`-derived descendant map (no re-mining) as a
+      structural veto for three *other* WN18RR relations, checked with the
+      same cheap proxy (0 false vetoes against real test triples) before
+      spending any substrate compute:
+      | relation | n | false vetoes | fires | mean excluded when firing |
+      |---|---|---|---|---|
+      | `_instance_hypernym` | 122 | 0/122 | 0% | n/a (never fires - instances are leaves) |
+      | `_synset_domain_topic_of` | 114 | 0/114 | 15.8% | 0.5 |
+      | `_has_part` | 172 | 0/172 | 27.9% | 15.6 |
+      | `_member_meronym` | 253 | 0/253 | 2.8% | 1.3 |
+      Zero false vetoes on every relation tested - the constraint (no
+      entity can be its own hypernym-hierarchy descendant) is sound
+      regardless of which relation's held-out fact is being predicted,
+      because it's a property of the *type hierarchy itself*, not of the
+      relation being queried.
+- [x] **Ran the real substrate test on the two relations with a large
+      enough eligible pool** (`_synset_domain_topic_of` n=10,
+      `_member_meronym`'s pool was only 2 - too small to bother with;
+      `_has_part` n=22 from the eligibility window `2 <= excluded <= 30`,
+      same window as the `_hypernym` run, same harness):
+      | relation | n | BASELINE | JOINT | POST_FILTER | disagree | mean candidates |
+      |---|---|---|---|---|---|---|
+      | `_hypernym` | 198 | 0.106 | 0.212 | 0.328 | 0.485 | 11.2 |
+      | `_has_part` | 22 | 0.000 | 0.091 | 0.318 | 0.636 | 40.3 |
+      | `_synset_domain_topic_of` | 10 | 0.100 | 0.700 | 0.800 | 0.100 | 6.1 |
+      **The shape replicates across all three**: baseline stays low
+      (0-10.6%), both mechanisms substantially beat it, and POST_FILTER
+      is never worse than JOINT - this is genuine cross-relation transfer
+      (`_has_part` and `_synset_domain_topic_of` use a constraint mined
+      from `_hypernym` facts alone), not three separate lucky fits to one
+      relation each.
+- [x] **A relationship the single-relation result couldn't show:
+      disagreement rate tracks candidate-field size, monotonically, across
+      all three.** 6.1 candidates -> 10% disagree; 11.2 -> 48.5%; 40.3 ->
+      63.6%. This is exactly what the settle-dynamics explanation predicts
+      (more live attractors removed at once -> more room for `settle`'s
+      limited-step iteration to converge somewhere a static re-rank
+      wouldn't) and is a testable, falsifiable pattern, not just a
+      restated conclusion - a natural target for a future session to
+      either break or confirm further.
+- [x] **Honest scope, not overclaimed:** `_has_part` (n=22) and
+      `_synset_domain_topic_of` (n=10) are much smaller samples than
+      `_hypernym`'s full-pool n=198 - their *direction* is a solid third
+      and fourth data point agreeing with the first, but the exact
+      percentages carry far less weight individually. `_instance_hypernym`
+      never fired at all (instances sit at the leaves of the hypernym
+      tree, so they have no hypernym-descendants to exclude) - a clean,
+      structurally-explained null result, not a failure of the method.
+
 ## v1.0 — GA-HDC (experimental, optional)
 - [x] `tier2_substrate/geometric.py`: a small-grade Clifford algebra `Cl(n,0)`,
       `n <= 6`, as an additive relation-rotor layer alongside (not replacing)
